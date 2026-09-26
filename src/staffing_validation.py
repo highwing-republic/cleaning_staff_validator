@@ -11,6 +11,8 @@ DBアクセスは行わない。ACTIVE取込の勤務セル・日別必要条件
 判定は「確定値で充足 → OK」「UNKNOWN・未登録が全員条件を満たせば充足 → WARNING」
 「それでも不足 → ERROR」の3段階。ロール・スキルは staff master 照合済みの人だけを確定値とし、
 未登録スタッフはどのロール・スキルでもあり得る人として最大可能人数に含める。
+ただし1人1ロールのため、未登録スタッフを複数ロールへ二重に割り当てられない。
+ロール別判定の後に全ロールを同時に満たせるかを判定する（ROLE_COMBINATION_SHORTAGE）。
 """
 
 from dataclasses import dataclass
@@ -42,6 +44,8 @@ STAFF_OVER_MAX = "STAFF_OVER_MAX"
 STAFF_OVER_MAX_UNCERTAIN = "STAFF_OVER_MAX_UNCERTAIN"
 ROLE_SHORTAGE = "ROLE_SHORTAGE"
 ROLE_UNCERTAIN = "ROLE_UNCERTAIN"
+# 各ロールを個別に見るだけでは発見できない組み合わせ不足（1人1ロール制約）
+ROLE_COMBINATION_SHORTAGE = "ROLE_COMBINATION_SHORTAGE"
 SKILL_SHORTAGE = "SKILL_SHORTAGE"
 SKILL_UNCERTAIN = "SKILL_UNCERTAIN"
 UNMATCHED_STAFF = "UNMATCHED_STAFF"
@@ -239,6 +243,50 @@ def _check_counted_requirement(
     ]
 
 
+def _check_role_combination(
+    work_date: str,
+    workers: _DayWorkers,
+    required_roles: dict[int, int],
+    actual_roles: dict[int, int],
+) -> list[ValidationIssue]:
+    """1人1ロール制約で、全ロールを同時に満たせるかを判定する.
+
+    ロール別判定では未登録スタッフを各ロールの候補として重複して数えるため、
+    「未登録1名でリーダーもチェッカーも埋まる」ように見えてしまう。ここでは
+    1. 各ロールの不足 = 必要 - 確定
+    2. 同じロールの登録済みUNKNOWN勤務者で埋められる分を差し引く（ロールは確定しているため）
+    3. 残った不足の合計を、ロール不明の未登録候補（清掃 TIME_RANGE / UNKNOWN）の人数と比較する
+    残不足合計 > 未登録候補数 なら、楽観的に見ても同時には満たせないため ERROR。
+    """
+    fixed_uncertain = {role_id: 0 for role_id in required_roles}
+    for staff in workers.uncertain_matched:
+        if staff.role_id in fixed_uncertain:
+            fixed_uncertain[staff.role_id] += 1
+
+    total_deficit = 0
+    remaining = 0
+    for role_id, required in required_roles.items():
+        deficit = max(0, required - actual_roles.get(role_id, 0))
+        total_deficit += deficit
+        remaining += max(0, deficit - fixed_uncertain[role_id])
+
+    candidates = workers.unmatched
+    if total_deficit == 0 or remaining <= candidates:
+        return []
+    return [
+        ValidationIssue(
+            ROLE_COMBINATION_SHORTAGE,
+            VALIDATION_STATUS_ERROR,
+            "ロール別には充足可能に見えますが、候補スタッフ数が不足しているため、"
+            "必要なロールを同時に満たすことができません。"
+            f"ロール不足合計：{remaining}名／割当可能な未登録候補：{candidates}名。",
+            work_date,
+            required=remaining,
+            possible=candidates,
+        )
+    ]
+
+
 def _data_quality_issues(work_date: str, workers: _DayWorkers) -> list[ValidationIssue]:
     issues: list[ValidationIssue] = []
     if workers.uncertain:
@@ -318,8 +366,9 @@ def validate_day(
     issues += _check_maximum(work_date, workers, requirement.max_total_staff)
 
     required_roles = {role_id: role_requirements.get(role_id, 0) for role_id in role_names}
+    role_issues: list[ValidationIssue] = []
     for role_id, required in required_roles.items():
-        issues += _check_counted_requirement(
+        role_issues += _check_counted_requirement(
             work_date,
             required=required,
             known=actual_roles[role_id],
@@ -329,6 +378,9 @@ def validate_day(
             uncertain_code=ROLE_UNCERTAIN,
             role_id=role_id,
         )
+    issues += role_issues
+    if not any(i.code == ROLE_SHORTAGE for i in role_issues):
+        issues += _check_role_combination(work_date, workers, required_roles, actual_roles)
 
     level = requirement.required_skill_level
     skill_count = requirement.required_skill_count

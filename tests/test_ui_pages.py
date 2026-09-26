@@ -426,3 +426,33 @@ def test_validation_page_issue_details(db_path):
     assert any("清掃スタッフが1名以上不足しています" in m and "必要：2名" in m for m in errors)
     warnings = [e.value for e in at.warning]
     assert any("必要条件が未設定" in m for m in warnings)
+
+
+def _download_buttons(at):
+    return at.get("download_button")
+
+
+def test_validation_page_shows_excel_download(db_path):
+    at = _open_september(db_path)
+    (button,) = _download_buttons(at)
+    assert button.proto.label == "Excelをダウンロード"
+    assert all("Excelの作成に失敗" not in e.value for e in at.error)
+
+
+def test_validation_page_excel_failure_does_not_crash(db_path, monkeypatch):
+    import src.validation_excel as validation_excel
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(validation_excel, "export_validation_excel", _boom)
+    at = _open_september(db_path)
+    assert _download_buttons(at) == []
+    assert any("Excelの作成に失敗しました" in e.value for e in at.error)
+    # 検証結果の表示は続く
+    assert len(at.dataframe[0].value) == 30
+
+
+def test_validation_page_without_import_has_no_excel_download(db_path):
+    at = _open_validation_page()
+    assert _download_buttons(at) == []

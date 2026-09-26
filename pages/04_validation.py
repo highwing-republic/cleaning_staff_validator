@@ -1,7 +1,7 @@
 """日別検証画面.
 
 ACTIVEな勤怠取込と日別必要条件を比較し、清掃人数・ロール・スキルの不足や判定不能を日別に表示する。
-（Excel出力は Phase 4 で追加予定）
+月間検証結果はExcel（月間検証・問題一覧・取込情報）でダウンロードできる。
 """
 
 import pandas as pd
@@ -16,6 +16,12 @@ from src.constants import (
 )
 from src.models import DailyStaffingResult
 from src.ui_common import format_date_ja, format_year_month_ja, open_connection
+from src.validation_display import (
+    REQUIREMENT_MISSING_LABEL,
+    format_role_cell,
+    format_skill_cell,
+)
+from src.validation_excel import export_validation_excel, validation_excel_filename
 
 STATUS_LABELS = {
     VALIDATION_STATUS_OK: "🟢 OK",
@@ -72,45 +78,34 @@ cols[2].metric("WARNING日数", result.count_status(VALIDATION_STATUS_WARNING))
 cols[3].metric("ERROR日数", result.count_status(VALIDATION_STATUS_ERROR))
 cols[4].metric("要件未設定日数", result.requirement_missing_days)
 
+try:
+    excel_bytes = export_validation_excel(result, role_names)
+except Exception as exc:  # 出力に失敗しても画面の検証結果は表示し続ける
+    st.error(f"Excelの作成に失敗しました: {exc}")
+else:
+    st.download_button(
+        "Excelをダウンロード",
+        data=excel_bytes,
+        file_name=validation_excel_filename(year_month),
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key="validation_excel_download",
+    )
+
 # ---------------------------------------------------------------------------
 # 月間一覧
 # ---------------------------------------------------------------------------
-
-
-def _count_cell(known: int, required: int, possible: int) -> str:
-    text = f"{known}/{required}"
-    if known < required:
-        text += f"（最大{possible}）"
-    return text
-
-
-def _skill_cell(day: DailyStaffingResult) -> str:
-    if not day.requirement_defined:
-        return "-"
-    if day.required_skill_count <= 0 or day.required_skill_level is None:
-        return "条件なし"
-    return f"Lv{day.required_skill_level}+ " + _count_cell(
-        day.actual_skill_count, day.required_skill_count, day.possible_skill_count
-    )
 
 
 def _row(day: DailyStaffingResult) -> dict:
     row = {
         "日付": format_date_ja(day.work_date),
         "清掃勤務": day.actual_cleaning_staff,
-        "必要": str(day.required_staff) if day.requirement_defined else "要件未設定",
+        "必要": str(day.required_staff) if day.requirement_defined else REQUIREMENT_MISSING_LABEL,
         "上限": "" if day.max_total_staff is None else str(day.max_total_staff),
     }
     for role_id, name in role_names.items():
-        if day.requirement_defined:
-            row[name] = _count_cell(
-                day.actual_roles[role_id],
-                day.required_roles[role_id],
-                day.possible_roles[role_id],
-            )
-        else:
-            row[name] = f"{day.actual_roles[role_id]}/-"
-    row["スキル"] = _skill_cell(day)
+        row[name] = format_role_cell(day, role_id)
+    row["スキル"] = format_skill_cell(day)
     row["未登録"] = day.unmatched_working_count
     row["UNKNOWN"] = day.unknown_cleaning_shift_count
     row["判定"] = STATUS_LABELS[day.status]
@@ -127,7 +122,7 @@ def _filter_days(days: list[DailyStaffingResult], mode: str) -> list[DailyStaffi
 
 st.subheader("月間一覧")
 st.caption(
-    "ロール・スキルは「確定人数/必要人数」。不足時の（最大n）は未登録スタッフ・勤務区分不明の人が"
+    "ロール・スキルは「確定人数 / 必要人数」。不足時の（最大n）は未登録スタッフ・勤務区分不明の人が"
     "条件を満たすと仮定した最大人数です。未登録＝マスター未登録の清掃勤務者数、"
     "UNKNOWN＝清掃所属の勤務区分不明セル数。"
 )

@@ -270,6 +270,84 @@ def test_inactive_staff_counts_with_master_role():
 
 
 # ---------------------------------------------------------------------------
+# 複合ロール（1人1ロール制約）
+# ---------------------------------------------------------------------------
+
+
+def test_rc01_one_generic_candidate_cannot_fill_two_roles():
+    result = run([cleaning(None)], req(1), {LEADER: 1, CHECKER: 1})
+    # 個別には両ロールとも充足可能に見える
+    assert result.possible_roles[LEADER] == 1 and result.possible_roles[CHECKER] == 1
+    assert sv.ROLE_SHORTAGE not in codes(result)
+    assert result.status == "ERROR"
+    combo = issue(result, sv.ROLE_COMBINATION_SHORTAGE)
+    assert combo.severity == "ERROR"
+    assert (combo.required, combo.possible) == (2, 1)
+    assert "ロール不足合計：2名" in combo.message
+    assert "割当可能な未登録候補：1名" in combo.message
+
+
+def test_rc02_two_generic_candidates_warning():
+    result = run([cleaning(None), cleaning(None)], req(2), {LEADER: 1, CHECKER: 1})
+    assert sv.ROLE_COMBINATION_SHORTAGE not in codes(result)
+    assert result.status == "WARNING"
+    assert codes(result).count(sv.ROLE_UNCERTAIN) == 2
+
+
+def test_rc03_fixed_role_unknown_plus_generic_warning():
+    staff_list = [staff(1, LEADER)]
+    result = run([unknown(1), cleaning(None)], req(1), {LEADER: 1, CHECKER: 1}, staff_list)
+    assert sv.ROLE_COMBINATION_SHORTAGE not in codes(result)
+    assert result.status == "WARNING"
+
+
+def test_rc04_known_roles_ok():
+    staff_list = [staff(1, LEADER), staff(2, CHECKER)]
+    result = run([cleaning(1), cleaning(2)], req(2), {LEADER: 1, CHECKER: 1}, staff_list)
+    assert result.issues == []
+    assert result.status == "OK"
+
+
+def test_rc05_partial_known_remaining_two_candidate_one_error():
+    staff_list = [staff(1, LEADER), staff(2, CHECKER)]
+    shifts = [cleaning(1), cleaning(2), cleaning(None)]
+    result = run(shifts, req(3), {LEADER: 2, CHECKER: 2}, staff_list)
+    assert sv.ROLE_SHORTAGE not in codes(result)
+    combo = issue(result, sv.ROLE_COMBINATION_SHORTAGE)
+    assert (combo.required, combo.possible) == (2, 1)
+    assert result.status == "ERROR"
+
+
+def test_combination_fixed_unknown_of_other_role_does_not_help():
+    # CHECKERのUNKNOWN登録者はLEADER不足を埋められない
+    staff_list = [staff(1, CHECKER)]
+    result = run([unknown(1), cleaning(None)], req(1), {LEADER: 2}, staff_list)
+    assert result.possible_roles[LEADER] == 1
+    assert sv.ROLE_SHORTAGE in codes(result)  # 個別判定で既に不足
+    assert sv.ROLE_COMBINATION_SHORTAGE not in codes(result)  # 重複して出さない
+    assert result.status == "ERROR"
+
+
+def test_combination_includes_cleaner_role_and_unknown_generic():
+    # 未登録のUNKNOWN勤務者1名も候補だが、リーダーとクリーナーを同時には満たせない
+    result = run([unknown(None)], req(0), {LEADER: 1, CLEANER: 1})
+    assert sv.ROLE_COMBINATION_SHORTAGE in codes(result)
+    assert result.status == "ERROR"
+
+
+def test_combination_fixed_unknowns_fill_their_own_roles():
+    staff_list = [staff(1, LEADER), staff(2, CHECKER)]
+    result = run([unknown(1), unknown(2)], req(0), {LEADER: 1, CHECKER: 1}, staff_list)
+    assert sv.ROLE_COMBINATION_SHORTAGE not in codes(result)
+    assert result.status == "WARNING"
+
+
+def test_combination_not_checked_when_requirement_missing():
+    result = run([cleaning(None)], None, {LEADER: 1, CHECKER: 1})
+    assert codes(result) == [sv.REQUIREMENT_MISSING, sv.UNMATCHED_STAFF]
+
+
+# ---------------------------------------------------------------------------
 # スキル
 # ---------------------------------------------------------------------------
 
