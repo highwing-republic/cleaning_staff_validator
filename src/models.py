@@ -2,7 +2,12 @@
 
 from dataclasses import dataclass, field
 
-from src.constants import IMPORT_STATUSES, SHIFT_TYPES, SKILL_LEVEL_DEFAULT
+from src.constants import (
+    IMPORT_STATUSES,
+    SHIFT_TYPES,
+    SKILL_LEVEL_DEFAULT,
+    VALIDATION_STATUSES,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -152,6 +157,85 @@ class AttendancePreview:
     @property
     def can_import(self) -> bool:
         return not self.errors and self.year_month is not None and bool(self.shifts)
+
+
+# ---------------------------------------------------------------------------
+# Daily staffing validation
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ValidationIssue:
+    """日別検証の問題1件. code は安定した識別子（例 STAFF_SHORTAGE）.
+
+    required / actual / possible は判定に使った人数（該当しない場合None）。
+    possible は UNKNOWN勤務・未登録スタッフが全員条件を満たすと仮定した最大人数。
+    """
+
+    code: str
+    severity: str
+    message: str
+    work_date: str
+    required: int | None = None
+    actual: int | None = None
+    possible: int | None = None
+    role_id: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.severity not in VALIDATION_STATUSES:
+            raise ValueError(f"invalid severity: {self.severity!r}")
+
+
+@dataclass(frozen=True)
+class DailyStaffingResult:
+    """1日分の清掃体制の集計と判定.
+
+    requirement_defined=False（daily_requirements 行なし）の日は required_* が None で、
+    人数・上限・ロール・スキルは判定しない（0人必要とはみなさない）。
+    actual_roles / actual_skill_count は確定値（staff master照合済みの清掃勤務者のみ）、
+    possible_* はUNKNOWN勤務・未登録スタッフを含めた最大可能人数。
+    """
+
+    work_date: str
+    status: str
+    requirement_defined: bool
+    actual_cleaning_staff: int
+    unmatched_working_count: int
+    unknown_cleaning_shift_count: int
+    required_staff: int | None = None
+    max_total_staff: int | None = None
+    required_roles: dict[int, int] = field(default_factory=dict)
+    actual_roles: dict[int, int] = field(default_factory=dict)
+    possible_roles: dict[int, int] = field(default_factory=dict)
+    required_skill_level: int | None = None
+    required_skill_count: int = 0
+    actual_skill_count: int | None = None
+    possible_skill_count: int | None = None
+    issues: list[ValidationIssue] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if self.status not in VALIDATION_STATUSES:
+            raise ValueError(f"invalid status: {self.status!r}")
+
+
+@dataclass(frozen=True)
+class MonthlyValidationResult:
+    """月間検証結果. 対象月にACTIVE取込がない場合 import_record=None, days=[]."""
+
+    year_month: str
+    import_record: AttendanceImportRecord | None = None
+    days: list[DailyStaffingResult] = field(default_factory=list)
+
+    @property
+    def has_import(self) -> bool:
+        return self.import_record is not None
+
+    def count_status(self, status: str) -> int:
+        return sum(1 for d in self.days if d.status == status)
+
+    @property
+    def requirement_missing_days(self) -> int:
+        return sum(1 for d in self.days if not d.requirement_defined)
 
 
 # ---------------------------------------------------------------------------

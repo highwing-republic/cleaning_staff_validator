@@ -259,13 +259,14 @@ def parse_shift_cell(raw: str | None) -> ParsedShiftCell:
     return ParsedShiftCell(SHIFT_TYPE_UNKNOWN, raw)
 
 
+def is_cleaning_department(department: str | None) -> bool:
+    """CSVの部門が清掃か（前後空白は無視）."""
+    return department is not None and department.strip() == CLEANING_DEPARTMENT
+
+
 def is_available_for_cleaning(department: str | None, shift_type: str) -> bool:
     """CSVの部門が清掃 かつ TIME_RANGE のときだけ清掃勤務とする."""
-    return (
-        shift_type == SHIFT_TYPE_TIME_RANGE
-        and department is not None
-        and department.strip() == CLEANING_DEPARTMENT
-    )
+    return shift_type == SHIFT_TYPE_TIME_RANGE and is_cleaning_department(department)
 
 
 # ---------------------------------------------------------------------------

@@ -325,3 +325,104 @@ def test_import_page_reimport_notice_and_supersede(db_path):
         ("new.csv", "ACTIVE"),
         ("old.csv", "SUPERSEDED"),
     ]
+
+
+# ---------------------------------------------------------------------------
+# 04 日別検証
+# ---------------------------------------------------------------------------
+
+VALIDATION_PAGE = "pages/04_validation.py"
+SEP = get_month_dates("2026-09")
+
+
+def _seed_validation(db_path):
+    """2026-09: OK 28日 / ERROR 1日(9/2) / 要件未設定 1日(9/3). 2026-10 も取込のみ行う."""
+    conn = get_connection(str(db_path))
+    repo.create_staff(conn, "0015", "テスト清掃A", LEADER, 4, "清掃")
+    for ym, name in (("2026-09", "sep.csv"), ("2026-10", "oct.csv")):
+        services.import_attendance(conn, services.preview_attendance_csv(conn, make_csv(ym), name))
+    repo.save_daily_requirements(
+        conn, [DailyRequirementInput(d, 2 if d == SEP[1] else 1) for d in SEP if d != SEP[2]]
+    )
+    conn.close()
+
+
+def _open_validation_page():
+    at = AppTest.from_file(_page(VALIDATION_PAGE), default_timeout=30)
+    at.run()
+    assert not at.exception
+    return at
+
+
+def _table_dates(at):
+    return list(at.dataframe[0].value["日付"]) if len(at.dataframe) else []
+
+
+def test_validation_page_without_active_import(db_path):
+    at = _open_validation_page()
+    assert "勤怠シフトが取り込まれていません" in _all_text(at)
+    assert len(at.dataframe) == 0
+
+
+def test_validation_page_month_selection_defaults_to_latest(db_path):
+    _seed_validation(db_path)
+    at = _open_validation_page()
+    select = at.selectbox(key="validation_year_month")
+    assert list(select.options) == ["2026年10月", "2026年9月"]
+    assert _metrics(at)["対象月"] == "2026年10月"
+    assert "oct.csv" in _all_text(at)
+
+    select.set_value("2026-09").run()
+    assert not at.exception
+    metrics = _metrics(at)
+    assert metrics["対象月"] == "2026年9月"
+    assert (metrics["OK日数"], metrics["WARNING日数"], metrics["ERROR日数"]) == ("28", "1", "1")
+    assert metrics["要件未設定日数"] == "1"
+    assert "sep.csv" in _all_text(at)
+
+
+def _open_september(db_path):
+    _seed_validation(db_path)
+    at = _open_validation_page()
+    at.selectbox(key="validation_year_month").set_value("2026-09").run()
+    assert not at.exception
+    return at
+
+
+def test_validation_page_all_days_table(db_path):
+    at = _open_september(db_path)
+    table = at.dataframe[0].value
+    assert len(table) == 30
+    # ロール列は role master から生成される
+    assert {"リーダー", "チェッカー", "クリーナー"} <= set(table.columns)
+    by_date = table.set_index("日付")
+    assert by_date.loc["9月1日(火)", "判定"] == "🟢 OK"
+    assert by_date.loc["9月2日(水)", "判定"] == "🔴 ERROR"
+    assert by_date.loc["9月3日(木)", "必要"] == "要件未設定"
+    assert by_date.loc["9月3日(木)", "判定"] == "🟡 WARNING"
+    assert by_date.loc["9月1日(火)", "清掃勤務"] == 1
+
+
+def test_validation_page_problem_days_filter(db_path):
+    at = _open_september(db_path)
+    at.radio(key="validation_filter").set_value("問題のある日だけ").run()
+    assert not at.exception
+    assert _table_dates(at) == ["9月2日(水)", "9月3日(木)"]
+
+
+def test_validation_page_errors_only_filter(db_path):
+    at = _open_september(db_path)
+    at.radio(key="validation_filter").set_value("ERRORのみ").run()
+    assert not at.exception
+    assert _table_dates(at) == ["9月2日(水)"]
+
+
+def test_validation_page_issue_details(db_path):
+    at = _open_september(db_path)
+    labels = [e.label for e in at.expander]
+    assert any(label.startswith("9月2日(水)") and "ERROR" in label for label in labels)
+    assert any(label.startswith("9月3日(木)") and "WARNING" in label for label in labels)
+    errors = [e.value for e in at.error]
+    assert any("清掃スタッフが1名以上不足しています" in m and "必要：2名" in m for m in errors)
+    warnings = [e.value for e in at.warning]
+    assert any("必要条件が未設定" in m for m in warnings)

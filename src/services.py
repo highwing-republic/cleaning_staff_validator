@@ -7,15 +7,17 @@ import dataclasses
 import sqlite3
 
 from src import repositories as repo
-from src.attendance_import import parse_attendance_csv
-from src.constants import CLEANING_DEPARTMENT, SHIFT_TYPE_BLANK, SHIFT_TYPE_UNKNOWN
+from src.attendance_import import is_cleaning_department, parse_attendance_csv
+from src.constants import SHIFT_TYPE_BLANK, SHIFT_TYPE_UNKNOWN
 from src.models import (
     AttendanceParseResult,
     AttendancePreview,
     AttendanceShiftInput,
     ImportIssue,
+    MonthlyValidationResult,
     StaffInput,
 )
+from src.staffing_validation import validate_month_staffing
 
 # 照合 warning コード（取込は可能）
 UNMATCHED_STAFF = "ATTENDANCE_UNMATCHED_STAFF"
@@ -101,7 +103,7 @@ def build_attendance_preview(
         cleaning_employee_count=sum(
             1
             for s in employees.values()
-            if s.department is not None and s.department.strip() == CLEANING_DEPARTMENT
+            if is_cleaning_department(s.department)
         ),
         name_mismatch_count=len(name_mismatch),
         department_mismatch_count=len(department_mismatch),
@@ -120,6 +122,33 @@ def import_attendance(conn: sqlite3.Connection, preview: AttendancePreview) -> i
     return repo.save_attendance_import(
         conn, preview.year_month, preview.source_filename, preview.shifts
     )
+
+
+# ---------------------------------------------------------------------------
+# 日別清掃体制検証
+# ---------------------------------------------------------------------------
+
+NO_ACTIVE_IMPORT_MESSAGE = "この月の勤怠シフトが取り込まれていません。"
+
+
+def validate_month(conn: sqlite3.Connection, year_month: str) -> MonthlyValidationResult:
+    """対象月のACTIVE取込を日別必要条件と比較する.
+
+    ACTIVE取込がなければ検証エンジンを実行せず import_record=None の結果を返す。
+    """
+    active = repo.get_active_import(conn, year_month)
+    if active is None:
+        return MonthlyValidationResult(year_month=year_month)
+
+    days = validate_month_staffing(
+        year_month,
+        repo.list_attendance_shifts(conn, active.import_id),
+        repo.get_daily_requirements(conn, year_month),
+        repo.get_role_requirements(conn, year_month),
+        repo.list_staff(conn, include_inactive=True),
+        get_role_names(conn),
+    )
+    return MonthlyValidationResult(year_month=year_month, import_record=active, days=days)
 
 
 def _employees_in_order(shifts: list[AttendanceShiftInput]) -> dict[str, AttendanceShiftInput]:
