@@ -334,6 +334,15 @@ def get_active_import(
     return _row_to_import_record(row)
 
 
+def list_active_imports(conn: sqlite3.Connection) -> list[AttendanceImportRecord]:
+    """全月のACTIVE取込を対象月の新しい順で返す."""
+    rows = conn.execute(
+        "SELECT * FROM attendance_imports WHERE status = ? ORDER BY year_month DESC",
+        (IMPORT_STATUS_ACTIVE,),
+    ).fetchall()
+    return [_row_to_import_record(row) for row in rows]
+
+
 def list_attendance_imports(
     conn: sqlite3.Connection, year_month: str
 ) -> list[AttendanceImportRecord]:

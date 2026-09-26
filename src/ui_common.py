@@ -67,19 +67,21 @@ def select_year_month(key: str = "year_month") -> str:
     if current not in options:
         options = sorted(set(options) | {current})
 
-    def _label(ym: str) -> str:
-        year, month = ym.split("-")
-        return f"{year}年{int(month)}月"
-
     selected = st.selectbox(
         "対象年月",
         options=options,
         index=options.index(current),
-        format_func=_label,
+        format_func=format_year_month_ja,
         key=f"_select_{key}",
     )
     st.session_state[key] = selected
     return selected
+
+
+def format_year_month_ja(year_month: str) -> str:
+    """'YYYY-MM' を '2026年9月' のように表示する."""
+    year, month = year_month.split("-")
+    return f"{year}年{int(month)}月"
 
 
 def format_date_ja(work_date: str) -> str:

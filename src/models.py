@@ -1,6 +1,6 @@
 """アプリ内で受け渡すデータ型."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from src.constants import IMPORT_STATUSES, SHIFT_TYPES, SKILL_LEVEL_DEFAULT
 
@@ -93,6 +93,65 @@ class AttendanceImportRecord:
     def __post_init__(self) -> None:
         if self.status not in IMPORT_STATUSES:
             raise ValueError(f"invalid status: {self.status!r}")
+
+
+@dataclass(frozen=True)
+class ImportIssue:
+    """勤怠CSV取込の問題1件（fatal error / warning 共通）.
+
+    row_number はCSVの行番号（ヘッダー=1行目）。該当しない場合None。
+    """
+
+    code: str
+    message: str
+    employee_code: str | None = None
+    employee_name: str | None = None
+    work_date: str | None = None
+    row_number: int | None = None
+
+
+@dataclass(frozen=True)
+class AttendanceParseResult:
+    """勤怠CSVの解析結果（DB非依存, staff未照合なので shifts の staff_id は全てNone）.
+
+    errors が1件でもあれば取込不可。year_month は日付列から判定できない場合None。
+    """
+
+    source_filename: str
+    year_month: str | None = None
+    shifts: list[AttendanceShiftInput] = field(default_factory=list)
+    errors: list[ImportIssue] = field(default_factory=list)
+    warnings: list[ImportIssue] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class AttendancePreview:
+    """staff master照合済みの取込前プレビュー. 件数は全て保存時の定義と同じ.
+
+    - employee_count: CSV内の従業員番号の種類数
+    - shift_count: BLANK以外のセル数（画面表示名「入力済みシフトセル数」）
+    - unmatched_count: staff masterと照合できなかった従業員番号の種類数
+    - cleaning_employee_count: CSVの部門が清掃の従業員数
+    - *_mismatch_count / inactive_staff_count: 該当する従業員数
+    """
+
+    source_filename: str
+    year_month: str | None = None
+    shifts: list[AttendanceShiftInput] = field(default_factory=list)
+    errors: list[ImportIssue] = field(default_factory=list)
+    warnings: list[ImportIssue] = field(default_factory=list)
+    employee_count: int = 0
+    shift_count: int = 0
+    unmatched_count: int = 0
+    unknown_shift_count: int = 0
+    cleaning_employee_count: int = 0
+    name_mismatch_count: int = 0
+    department_mismatch_count: int = 0
+    inactive_staff_count: int = 0
+
+    @property
+    def can_import(self) -> bool:
+        return not self.errors and self.year_month is not None and bool(self.shifts)
 
 
 # ---------------------------------------------------------------------------

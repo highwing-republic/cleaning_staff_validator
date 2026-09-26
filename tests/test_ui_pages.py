@@ -9,7 +9,9 @@ from pathlib import Path
 import pytest
 from streamlit.testing.v1 import AppTest
 
+from attendance_csv import make_csv
 from src import repositories as repo
+from src import services
 from src.database import get_connection, initialize_database
 from src.models import DailyRequirementInput
 from src.month_utils import get_month_dates
@@ -200,3 +202,126 @@ def test_requirements_page_saves_skill_columns(db_path):
     conn.close()
     assert len(reqs) == len(get_month_dates(ym))
     assert all((r.required_skill_level, r.required_skill_count) == (None, 0) for r in reqs)
+
+
+# ---------------------------------------------------------------------------
+# 02 勤怠CSV取込
+# ---------------------------------------------------------------------------
+
+IMPORT_PAGE = "pages/02_attendance_import.py"
+IMPORT_BUTTON = "この内容を有効版として取り込む"
+
+
+def _import_counts(db_path):
+    conn = get_connection(str(db_path))
+    counts = (
+        conn.execute("SELECT COUNT(*) FROM attendance_imports").fetchone()[0],
+        conn.execute("SELECT COUNT(*) FROM attendance_shifts").fetchone()[0],
+    )
+    conn.close()
+    return counts
+
+
+def _open_import_page():
+    at = AppTest.from_file(_page(IMPORT_PAGE), default_timeout=30)
+    at.run()
+    assert not at.exception
+    return at
+
+
+def _upload(at, data, name="shift_2026-09.csv"):
+    at.file_uploader[0].upload(name, data, "text/csv")
+    at.run()
+    assert not at.exception
+    return at
+
+
+def _import_buttons(at):
+    return [b for b in at.button if b.label == IMPORT_BUTTON]
+
+
+def _metrics(at):
+    return {m.label: m.value for m in at.metric}
+
+
+def _all_text(at):
+    parts = [e.value for e in at.markdown] + [e.value for e in at.caption]
+    parts += [e.value for e in at.info] + [e.value for e in at.warning]
+    parts += [e.value for e in at.success] + [e.value for e in at.error]
+    return "\n".join(str(p) for p in parts)
+
+
+def test_import_page_before_upload(db_path):
+    at = _open_import_page()
+    assert _import_buttons(at) == []
+    assert "有効な取込はまだありません" in _all_text(at)
+    assert len(at.file_uploader) == 1
+
+
+def test_import_page_preview_does_not_save(db_path):
+    at = _upload(_open_import_page(), make_csv())
+    metrics = _metrics(at)
+    assert metrics["対象月"] == "2026年9月"
+    assert metrics["従業員数"] == "3"
+    assert metrics["入力済みシフトセル数"] == "90"
+    assert metrics["清掃所属人数"] == "2"
+    assert metrics["未登録スタッフ数"] == "3"
+    assert metrics["UNKNOWN勤務セル数"] == "0"
+    assert "shift_2026-09.csv" in _all_text(at)
+    # 未登録スタッフ一覧が確認できる
+    assert any("未登録スタッフ" in e.label for e in at.expander)
+
+    (button,) = _import_buttons(at)
+    assert not button.disabled
+    assert _import_counts(db_path) == (0, 0)
+
+
+def test_import_page_fatal_error_blocks_saving(db_path):
+    at = _upload(_open_import_page(), make_csv(extra_columns=["備考"]))
+    assert at.error, "fatal error should be shown"
+    buttons = _import_buttons(at)
+    assert buttons and all(b.disabled for b in buttons)
+    assert _import_counts(db_path) == (0, 0)
+
+
+def test_import_page_saves_and_shows_active(db_path):
+    _seed(db_path)  # 0001〜0003 は CSV にないので全員未登録
+    at = _upload(_open_import_page(), make_csv())
+    _import_buttons(at)[0].click()
+    at.run()
+    assert not at.exception
+
+    assert _import_counts(db_path) == (1, 90)
+    text = _all_text(at)
+    assert "取込が完了しました" in text and "2026年9月の有効版を更新しました" in text
+    # アップロード欄がリセットされ、同じ内容を二重に取り込めない
+    assert _import_buttons(at) == []
+
+    active_table = at.dataframe[0].value
+    assert list(active_table["ファイル名"]) == ["shift_2026-09.csv"]
+    assert list(active_table["対象月"]) == ["2026年9月"]
+    assert list(active_table["未登録人数"]) == [3]
+
+
+def test_import_page_reimport_notice_and_supersede(db_path):
+    conn = get_connection(str(db_path))
+    services.import_attendance(
+        conn, services.preview_attendance_csv(conn, make_csv(), "old.csv")
+    )
+    conn.close()
+
+    at = _upload(_open_import_page(), make_csv(), "new.csv")
+    assert "2026年9月には既に有効な取込があります" in _all_text(at)
+    assert "現在の取込は履歴として残り" in _all_text(at)
+
+    _import_buttons(at)[0].click()
+    at.run()
+    assert not at.exception
+
+    conn = get_connection(str(db_path))
+    history = repo.list_attendance_imports(conn, "2026-09")
+    conn.close()
+    assert [(h.source_filename, h.status) for h in history] == [
+        ("new.csv", "ACTIVE"),
+        ("old.csv", "SUPERSEDED"),
+    ]
