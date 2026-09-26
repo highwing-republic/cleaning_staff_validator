@@ -1,0 +1,16 @@
+staff_name,role_code,daily_work_minutes,max_consecutive_days,skill_level
+リーダー1,LEADER,480,5,5
+リーダー2,LEADER,480,5,5
+リーダー3,LEADER,420,5,4
+チェッカー1,CHECKER,480,5,4
+チェッカー2,CHECKER,480,5,4
+チェッカー3,CHECKER,360,5,3
+クリーナー1,CLEANER,480,5,4
+クリーナー2,CLEANER,480,5,3
+クリーナー3,CLEANER,480,5,3
+クリーナー4,CLEANER,420,5,3
+クリーナー5,CLEANER,420,5,2
+クリーナー6,CLEANER,360,5,2
+クリーナー7,CLEANER,360,5,2
+クリーナー8,CLEANER,300,5,1
+クリーナー9,CLEANER,300,5,1
