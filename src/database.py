@@ -1,18 +1,23 @@
-"""SQLite接続とスキーマ初期化（§17-§27）."""
+"""SQLite接続とスキーマ初期化."""
 
 import sqlite3
 from pathlib import Path
 
 from src.constants import (
-    PREFERENCE_TYPES,
-    SCHEDULE_STATUS,
+    IMPORT_STATUS_ACTIVE,
+    IMPORT_STATUSES,
+    SHIFT_TYPE_TIME_RANGE,
+    SHIFT_TYPES,
     SKILL_LEVEL_DEFAULT,
     SKILL_LEVEL_MAX,
     SKILL_LEVEL_MIN,
-    SOURCE_TYPES,
 )
 
 DEFAULT_DB_PATH = Path(__file__).resolve().parent.parent / "data" / "app.db"
+
+
+class IncompatibleSchemaError(RuntimeError):
+    """元アプリ（月間シフト自動作成）のDBに接続した場合."""
 
 
 def _sql_list(values: tuple[str, ...]) -> str:
@@ -40,9 +45,10 @@ def get_connection(db_path: str | Path | None = None) -> sqlite3.Connection:
 
 def initialize_database(conn: sqlite3.Connection) -> None:
     """全テーブルを作成し、rolesの初期値を投入する（冪等）."""
-    preference_types = _sql_list(PREFERENCE_TYPES)
-    schedule_status = _sql_list(SCHEDULE_STATUS)
-    source_types = _sql_list(SOURCE_TYPES)
+    _ensure_compatible_schema(conn)
+
+    shift_types = _sql_list(SHIFT_TYPES)
+    import_statuses = _sql_list(IMPORT_STATUSES)
 
     with conn:
         conn.execute(
@@ -56,69 +62,39 @@ def initialize_database(conn: sqlite3.Connection) -> None:
             """
         )
 
+        # employee_code は勤怠CSVの従業員番号。先頭0等を保つため必ずTEXTで保持する
         conn.execute(
             f"""
             CREATE TABLE IF NOT EXISTS staff (
                 staff_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                employee_code TEXT UNIQUE NOT NULL CHECK (length(trim(employee_code)) > 0),
                 staff_name TEXT NOT NULL,
+                department TEXT NULL,
                 role_id INTEGER NOT NULL,
-                daily_work_minutes INTEGER NOT NULL,
-                max_consecutive_days INTEGER NOT NULL,
-                active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
                 skill_level INTEGER NOT NULL DEFAULT {SKILL_LEVEL_DEFAULT}
                     CHECK (skill_level BETWEEN {SKILL_LEVEL_MIN} AND {SKILL_LEVEL_MAX}),
+                active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
                 FOREIGN KEY (role_id) REFERENCES roles (role_id)
             )
             """
         )
 
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS staff_weekday_availability (
-                staff_id INTEGER NOT NULL,
-                weekday INTEGER NOT NULL CHECK (weekday BETWEEN 0 AND 6),
-                is_available INTEGER NOT NULL CHECK (is_available IN (0, 1)),
-                PRIMARY KEY (staff_id, weekday),
-                FOREIGN KEY (staff_id) REFERENCES staff (staff_id)
-            )
-            """
-        )
-
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS staff_monthly_conditions (
-                staff_id INTEGER NOT NULL,
-                year_month TEXT NOT NULL,
-                target_monthly_minutes INTEGER NOT NULL,
-                min_monthly_minutes INTEGER NULL,
-                max_monthly_minutes INTEGER NULL,
-                carryover_consecutive_days INTEGER NOT NULL DEFAULT 0,
-                PRIMARY KEY (staff_id, year_month),
-                FOREIGN KEY (staff_id) REFERENCES staff (staff_id)
-            )
-            """
-        )
-
+        # required_total_staff は最低必要人数。スキル条件は
+        # 「skill_level >= required_skill_level の清掃勤務者が required_skill_count 名以上」
         conn.execute(
             f"""
-            CREATE TABLE IF NOT EXISTS staff_day_preferences (
-                staff_id INTEGER NOT NULL,
-                work_date TEXT NOT NULL,
-                preference_type TEXT NOT NULL CHECK (preference_type IN ({preference_types})),
-                PRIMARY KEY (staff_id, work_date),
-                FOREIGN KEY (staff_id) REFERENCES staff (staff_id)
-            )
-            """
-        )
-
-        conn.execute(
-            """
             CREATE TABLE IF NOT EXISTS daily_requirements (
                 work_date TEXT PRIMARY KEY,
                 occupancy_rate REAL NULL,
                 required_total_staff INTEGER NOT NULL,
                 max_total_staff INTEGER NULL,
-                note TEXT NULL
+                note TEXT NULL,
+                required_skill_level INTEGER NULL
+                    CHECK (required_skill_level IS NULL
+                           OR required_skill_level BETWEEN {SKILL_LEVEL_MIN} AND {SKILL_LEVEL_MAX}),
+                required_skill_count INTEGER NOT NULL DEFAULT 0
+                    CHECK (required_skill_count >= 0),
+                CHECK (required_skill_count = 0 OR required_skill_level IS NOT NULL)
             )
             """
         )
@@ -137,33 +113,58 @@ def initialize_database(conn: sqlite3.Connection) -> None:
 
         conn.execute(
             f"""
-            CREATE TABLE IF NOT EXISTS schedule_months (
-                year_month TEXT PRIMARY KEY,
-                status TEXT NOT NULL CHECK (status IN ({schedule_status})),
-                solver_status TEXT NULL,
-                objective_overstaff INTEGER NULL,
-                objective_target_deviation INTEGER NULL,
-                objective_prefer_off INTEGER NULL,
-                objective_prefer_work INTEGER NULL,
-                objective_max_deviation INTEGER NULL,
-                objective_max_overstaff INTEGER NULL,
-                generated_at TEXT NULL,
-                confirmed_at TEXT NULL
+            CREATE TABLE IF NOT EXISTS attendance_imports (
+                import_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                year_month TEXT NOT NULL,
+                source_filename TEXT NOT NULL,
+                imported_at TEXT NOT NULL,
+                employee_count INTEGER NOT NULL CHECK (employee_count >= 0),
+                shift_count INTEGER NOT NULL CHECK (shift_count >= 0),
+                unmatched_count INTEGER NOT NULL CHECK (unmatched_count >= 0),
+                status TEXT NOT NULL CHECK (status IN ({import_statuses}))
             )
             """
         )
-
+        # 各月ACTIVEは最大1件
         conn.execute(
             f"""
-            CREATE TABLE IF NOT EXISTS schedule_assignments (
-                staff_id INTEGER NOT NULL,
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_attendance_imports_active_month
+            ON attendance_imports (year_month)
+            WHERE status = '{IMPORT_STATUS_ACTIVE}'
+            """
+        )
+
+        # staff_id は未登録スタッフの場合NULL。raw_shift は元CSV値をそのまま保持する
+        conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS attendance_shifts (
+                shift_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                import_id INTEGER NOT NULL,
+                staff_id INTEGER NULL,
+                employee_code TEXT NOT NULL,
+                employee_name TEXT NULL,
+                department TEXT NULL,
                 work_date TEXT NOT NULL,
-                is_working INTEGER NOT NULL CHECK (is_working IN (0, 1)),
-                is_locked INTEGER NOT NULL DEFAULT 0 CHECK (is_locked IN (0, 1)),
-                source TEXT NOT NULL CHECK (source IN ({source_types})),
-                PRIMARY KEY (staff_id, work_date),
+                raw_shift TEXT NOT NULL DEFAULT '',
+                shift_type TEXT NOT NULL CHECK (shift_type IN ({shift_types})),
+                start_minutes INTEGER NULL,
+                end_minutes INTEGER NULL,
+                available_for_cleaning INTEGER NOT NULL CHECK (available_for_cleaning IN (0, 1)),
+                UNIQUE (import_id, employee_code, work_date),
+                CHECK (
+                    (shift_type = '{SHIFT_TYPE_TIME_RANGE}')
+                    = (start_minutes IS NOT NULL AND end_minutes IS NOT NULL)
+                ),
+                CHECK (available_for_cleaning = 0 OR shift_type = '{SHIFT_TYPE_TIME_RANGE}'),
+                FOREIGN KEY (import_id) REFERENCES attendance_imports (import_id),
                 FOREIGN KEY (staff_id) REFERENCES staff (staff_id)
             )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS ix_attendance_shifts_import_date
+            ON attendance_shifts (import_id, work_date)
             """
         )
 
@@ -176,25 +177,16 @@ def initialize_database(conn: sqlite3.Connection) -> None:
             ],
         )
 
-        _migrate_staff_skill_level(conn)
-        _migrate_schedule_month_objectives(conn)
 
+def _ensure_compatible_schema(conn: sqlite3.Connection) -> None:
+    """元アプリのDB（employee_codeのないstaffテーブル）への接続を拒否する.
 
-def _migrate_staff_skill_level(conn: sqlite3.Connection) -> None:
-    """既存DBにskill_level列がなければ追加する（冪等, §7-§11）."""
+    CREATE TABLE IF NOT EXISTS は既存の旧テーブルをそのまま残すため、
+    誤って元アプリのDBを指定した場合に黙って動作しないよう明示的に止める。
+    """
     columns = {row[1] for row in conn.execute("PRAGMA table_info(staff)")}
-    if "skill_level" in columns:
-        return
-    conn.execute(
-        f"ALTER TABLE staff ADD COLUMN skill_level INTEGER NOT NULL "
-        f"DEFAULT {SKILL_LEVEL_DEFAULT} "
-        f"CHECK (skill_level BETWEEN {SKILL_LEVEL_MIN} AND {SKILL_LEVEL_MAX})"
-    )
-
-
-def _migrate_schedule_month_objectives(conn: sqlite3.Connection) -> None:
-    """既存DBに v1.4 の目的値列がなければ追加する（冪等）."""
-    columns = {row[1] for row in conn.execute("PRAGMA table_info(schedule_months)")}
-    for column in ("objective_max_deviation", "objective_max_overstaff"):
-        if column not in columns:
-            conn.execute(f"ALTER TABLE schedule_months ADD COLUMN {column} INTEGER NULL")
+    if columns and "employee_code" not in columns:
+        raise IncompatibleSchemaError(
+            "このDBは清掃人員検証アプリのスキーマではありません"
+            "（staff.employee_code がありません）。DBパスを確認してください。"
+        )

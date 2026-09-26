@@ -1,9 +1,10 @@
-"""日別最低人数・ロール入力画面（T68〜T71）."""
+"""日別必要条件（最低人数・ロール・スキル）入力画面."""
 
 import pandas as pd
 import streamlit as st
 
 from src import repositories as repo
+from src.constants import SKILL_LEVEL_MAX, SKILL_LEVEL_MIN
 from src.models import DailyRequirementInput, RoleRequirementInput
 from src.month_utils import get_month_dates, weekday_index
 from src.requirements_import import (
@@ -15,10 +16,11 @@ from src.requirements_import import (
 from src.ui_common import WEEKDAY_LABELS_JA, open_connection, select_year_month
 from src.validation import validate_daily_requirement
 
-st.set_page_config(page_title="日別最低人数入力", layout="wide")
-st.title("④ 日別最低人数・ロール入力")
+st.set_page_config(page_title="日別必要条件", layout="wide")
+st.title("③ 日別必要条件")
 st.caption(
-    "最低人数＝これより少なくしない人数。所定勤務日数に合わせて最大人数まで増えることがあります。0＝休館日。"
+    "最低人数＝清掃勤務者がこれ以上必要な人数（完全一致ではありません）。"
+    "スキル条件＝「必要スキルLv以上の清掃勤務者が必要スキル人数以上」。必要スキル人数0＝スキル条件なし。"
 )
 
 conn = open_connection()
@@ -49,6 +51,8 @@ for d in dates:
         "稼働率": req.occupancy_rate if req else None,
         "最低人数": req.required_total_staff if req else 0,
         "最大人数": req.max_total_staff if req else None,
+        "必要スキルLv": req.required_skill_level if req else None,
+        "必要スキル人数": req.required_skill_count if req else 0,
         "備考": req.note if req else None,
         "未保存": req is None,
     }
@@ -66,6 +70,10 @@ column_config = {
     "稼働率": st.column_config.NumberColumn(min_value=0.0, step=0.05),
     "最低人数": st.column_config.NumberColumn(min_value=0, step=1, required=True),
     "最大人数": st.column_config.NumberColumn(min_value=0, step=1),
+    "必要スキルLv": st.column_config.NumberColumn(
+        min_value=SKILL_LEVEL_MIN, max_value=SKILL_LEVEL_MAX, step=1
+    ),
+    "必要スキル人数": st.column_config.NumberColumn(min_value=0, step=1),
     "備考": st.column_config.TextColumn(),
     "未保存": None,
 }
@@ -108,6 +116,8 @@ if st.button("保存", type="primary"):
             max_total_staff=_clean_int(row["最大人数"]),
             occupancy_rate=_clean_float(row["稼働率"]),
             note=(row["備考"] or None) if isinstance(row["備考"], str) else None,
+            required_skill_level=_clean_int(row["必要スキルLv"]),
+            required_skill_count=_clean_int(row["必要スキル人数"]) or 0,
         )
         errors = validate_daily_requirement(req, row_role_reqs)
         if errors:
@@ -132,7 +142,8 @@ if st.button("保存", type="primary"):
 
 st.subheader("CSV / Excel 取り込み")
 st.caption(
-    "列: 日付, 稼働率(任意), 最低人数, 最大人数(任意), ロール別必要人数(role_codeまたはロール名, 任意), 備考(任意)。"
+    "列: 日付, 稼働率(任意), 最低人数, 最大人数(任意), ロール別必要人数(role_codeまたはロール名, 任意), "
+    "必要スキルLv(任意), 必要スキル人数(任意), 備考(任意)。"
     "全件エラーがない場合のみ保存します。"
 )
 
@@ -164,6 +175,8 @@ if uploaded is not None:
                         "稼働率": r.occupancy_rate,
                         "最低人数": r.required_total_staff,
                         "最大人数": r.max_total_staff,
+                        "必要スキルLv": r.required_skill_level,
+                        "必要スキル人数": r.required_skill_count,
                         "備考": r.note,
                     }
                     for r in imported_daily

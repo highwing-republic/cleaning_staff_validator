@@ -1,6 +1,6 @@
-"""日別必要人数CSV/Excelインポート（§16, T70/T71）.
+"""日別必要条件CSV/Excelインポート.
 
-DB/Streamlitに依存しない純粋ロジック。UI(pages/04_requirements.py)から呼ばれる。
+DB/Streamlitに依存しない純粋ロジック。UI(pages/03_requirements.py)から呼ばれる。
 """
 
 import io
@@ -16,7 +16,7 @@ from src.validation import validate_daily_requirement
 REQUIRED_BASE_COLUMNS = ("日付",)
 REQUIRED_TOTAL_STAFF_COLUMNS = ("最低人数", "必要人数")
 REQUIRED_COLUMNS = ("日付", "最低人数")
-OPTIONAL_COLUMNS = ("稼働率", "最大人数", "備考")
+OPTIONAL_COLUMNS = ("稼働率", "最大人数", "必要スキルLv", "必要スキル人数", "備考")
 
 
 class ImportFormatError(Exception):
@@ -144,8 +144,8 @@ def normalize_requirements(
 ) -> tuple[list[DailyRequirementInput], list[RoleRequirementInput], list[ValidationError]]:
     """CSV/Excel由来のDataFrameを検証しながらモデルへ変換する.
 
-    列: 日付(必須), 稼働率, 最低人数(必須, 旧名「必要人数」も許容), 最大人数, 備考,
-    ロール別必要人数(任意, role_codeまたはrole_name)
+    列: 日付(必須), 稼働率, 最低人数(必須, 旧名「必要人数」も許容), 最大人数,
+    必要スキルLv, 必要スキル人数(空欄は0), 備考, ロール別必要人数(任意, role_codeまたはrole_name)
     - 日付は対象月に含まれること。重複日はエラー。
     - 最低人数列は「最低人数」「必要人数」のどちらでもよい。両方ある場合は「最低人数」を優先する。
     - 行ごとの検証エラーには行番号を含める。
@@ -243,6 +243,32 @@ def normalize_requirements(
             )
             continue
 
+        skill_level, skill_level_ok = (
+            _to_optional_int(row.get("必要スキルLv")) if "必要スキルLv" in columns else (None, True)
+        )
+        if not skill_level_ok:
+            errors.append(
+                ValidationError(
+                    code="REQUIREMENT_IMPORT_SKILL_LEVEL_INVALID",
+                    message=f"{row_no}行目: 必要スキルLvは1〜5の整数で入力してください。",
+                    work_date=work_date,
+                )
+            )
+            continue
+
+        skill_count, skill_count_ok = (
+            _to_optional_int(row.get("必要スキル人数")) if "必要スキル人数" in columns else (None, True)
+        )
+        if not skill_count_ok:
+            errors.append(
+                ValidationError(
+                    code="REQUIREMENT_IMPORT_SKILL_COUNT_INVALID",
+                    message=f"{row_no}行目: 必要スキル人数は0以上の整数で入力してください。",
+                    work_date=work_date,
+                )
+            )
+            continue
+
         note = None
         if "備考" in columns:
             raw_note = row.get("備考")
@@ -279,6 +305,8 @@ def normalize_requirements(
             max_total_staff=max_total,
             occupancy_rate=occupancy,
             note=note,
+            required_skill_level=skill_level,
+            required_skill_count=skill_count if skill_count is not None else 0,
         )
         row_errors = validate_daily_requirement(daily_req, row_role_reqs)
         if row_errors:

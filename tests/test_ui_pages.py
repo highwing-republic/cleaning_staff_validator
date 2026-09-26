@@ -1,7 +1,7 @@
-"""Streamlitページの起動・主要操作テスト（T60〜T84 UI）.
+"""Streamlitページの起動・主要操作テスト.
 
 streamlit.testing.v1.AppTest でページを実行し、例外なくレンダリングできること、
-主要な操作（生成・確定など）が動くことを確認する。ピクセル単位の検証は行わない。
+主要な操作（スタッフ登録・更新など）が動くことを確認する。ピクセル単位の検証は行わない。
 """
 
 from pathlib import Path
@@ -10,15 +10,22 @@ import pytest
 from streamlit.testing.v1 import AppTest
 
 from src import repositories as repo
-from src import services
 from src.database import get_connection, initialize_database
-from src.models import DailyRequirementInput, MonthlyConditionInput
+from src.models import DailyRequirementInput
 from src.month_utils import get_month_dates
+from src.ui_common import DB_PATH_ENV
 
 YM = "2026-10"
 LEADER, CHECKER, CLEANER = 1, 2, 3
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+PAGES = [
+    "pages/01_staff.py",
+    "pages/02_attendance_import.py",
+    "pages/03_requirements.py",
+    "pages/04_validation.py",
+]
 
 
 def _page(relative_path: str) -> str:
@@ -28,49 +35,46 @@ def _page(relative_path: str) -> str:
 @pytest.fixture()
 def db_path(tmp_path, monkeypatch):
     path = tmp_path / "t.db"
-    monkeypatch.setenv("STAFF_SHIFT_DB_PATH", str(path))
-    # 初期化しておく（roles seed含む）
+    monkeypatch.setenv(DB_PATH_ENV, str(path))
+    # 元アプリの変数が設定されていても使われないこと
+    monkeypatch.setenv("STAFF_SHIFT_DB_PATH", str(tmp_path / "source_app.db"))
     conn = get_connection(str(path))
     initialize_database(conn)
     conn.close()
     return path
 
 
-def _seed_staff_and_month(db_path, n_leader=1, n_checker=1, n_cleaner=2, required=2, target_days=10):
+def _seed(db_path):
     conn = get_connection(str(db_path))
-    initialize_database(conn)
-    ids = []
-    for i in range(n_leader):
-        ids.append(repo.create_staff(conn, f"L{i}", LEADER, 480, 5))
-    for i in range(n_checker):
-        ids.append(repo.create_staff(conn, f"C{i}", CHECKER, 480, 5))
-    for i in range(n_cleaner):
-        ids.append(repo.create_staff(conn, f"W{i}", CLEANER, 480, 5))
-    for sid in ids:
-        repo.save_monthly_condition(conn, MonthlyConditionInput(sid, YM, target_days * 480))
-    dates = get_month_dates(YM)
-    repo.save_daily_requirements(conn, [DailyRequirementInput(d, required) for d in dates])
+    ids = [
+        repo.create_staff(conn, "0001", "L0", LEADER, 5, "清掃"),
+        repo.create_staff(conn, "0002", "C0", CHECKER, 4, "清掃"),
+        repo.create_staff(conn, "0003", "W0", CLEANER, 3, "清掃"),
+    ]
+    repo.save_daily_requirements(conn, [DailyRequirementInput(d, 2) for d in get_month_dates(YM)])
     conn.close()
     return ids
 
 
+def test_db_path_env_is_app_specific():
+    assert DB_PATH_ENV == "CLEANING_STAFF_VALIDATOR_DB_PATH"
+
+
 # ---------------------------------------------------------------------------
-# 空DBでも例外なく起動すること
+# 起動
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "page",
-    [
-        "pages/01_staff.py",
-        "pages/02_monthly_conditions.py",
-        "pages/03_preferences.py",
-        "pages/04_requirements.py",
-        "pages/05_generate.py",
-        "pages/06_schedule.py",
-    ],
-)
+@pytest.mark.parametrize("page", PAGES)
 def test_page_runs_without_exception_on_empty_db(db_path, page):
+    at = AppTest.from_file(_page(page), default_timeout=30)
+    at.run()
+    assert not at.exception
+
+
+@pytest.mark.parametrize("page", PAGES)
+def test_pages_render_with_seeded_data(db_path, page):
+    _seed(db_path)
     at = AppTest.from_file(_page(page), default_timeout=30)
     at.run()
     assert not at.exception
@@ -86,6 +90,7 @@ def test_menu_lists_every_page_with_japanese_title(db_path):
     import app
 
     menu_paths = [path for path, _ in app.MENU_PAGES]
+    assert menu_paths == PAGES
     assert menu_paths == sorted(p.relative_to(REPO_ROOT).as_posix() for p in (REPO_ROOT / "pages").glob("*.py"))
     assert all(not title.isascii() for _, title in app.MENU_PAGES)
 
@@ -96,54 +101,76 @@ def test_menu_lists_every_page_with_japanese_title(db_path):
         assert not at.exception, path
 
 
+def test_ui_uses_app_specific_db(db_path, tmp_path):
+    at = AppTest.from_file(_page("pages/01_staff.py"), default_timeout=30)
+    at.run()
+    assert not at.exception
+    assert not (tmp_path / "source_app.db").exists()
+
+
 # ---------------------------------------------------------------------------
 # 01 スタッフ
 # ---------------------------------------------------------------------------
 
 
-def test_staff_page_renders_with_seeded_data(db_path):
-    _seed_staff_and_month(db_path)
+def _create_form_submit(at, employee_code, name, skill=None):
+    # 新規登録フォーム(一覧が空の状態): text_input[0]=従業員番号, [1]=氏名, [2]=部門
+    at.text_input[0].input(employee_code)
+    at.text_input[1].input(name)
+    if skill is not None:
+        at.selectbox[1].select(skill)  # selectbox[0]=ロール, [1]=スキル
+    [b for b in at.button if b.label == "登録"][0].click()
+    at.run()
+
+
+def test_staff_page_create_form_saves_employee_code_as_text(db_path):
     at = AppTest.from_file(_page("pages/01_staff.py"), default_timeout=30)
     at.run()
-    assert not at.exception
-
-
-def test_staff_page_create_form_saves_skill_level(db_path):
-    """SK06-SK07: 新規登録フォームでスキル5を選び、DBへ保存されること."""
-    at = AppTest.from_file(_page("pages/01_staff.py"), default_timeout=30)
-    at.run()
-    assert not at.exception
-
-    # 新規登録フォーム(一覧が空の状態): text_input[0]=スタッフ名, selectbox[1]=スキル
-    at.text_input[0].input("新人太郎")
-    at.selectbox[1].select(5)
-    submit = [b for b in at.button if b.label == "登録"]
-    assert submit, "create submit button not found"
-    submit[0].click()
-    at.run()
+    _create_form_submit(at, "0015", "新人太郎", skill=5)
     assert not at.exception
 
     conn = get_connection(str(db_path))
-    created = next(s for s in repo.list_staff(conn) if s.staff_name == "新人太郎")
+    created = repo.get_staff_by_employee_code(conn, "0015")
     conn.close()
+    assert created is not None
+    assert created.staff_name == "新人太郎"
     assert created.skill_level == 5
+    assert created.department == "清掃"
 
 
-def test_staff_page_edit_form_updates_skill_level(db_path):
-    """SK08: 編集フォームでスキルを変更し、即座にDBへ保存されること."""
+def test_staff_page_rejects_duplicate_employee_code(db_path):
     conn = get_connection(str(db_path))
-    staff_id = repo.create_staff(conn, "山田", CLEANER, 480, 5, 2)
+    repo.create_staff(conn, "0015", "既存", CLEANER)
+    conn.close()
+
+    at = AppTest.from_file(_page("pages/01_staff.py"), default_timeout=30)
+    at.run()
+    create_code = [t for t in at.text_input if t.label == "従業員番号" and t.key != "edit_employee_code"][0]
+    create_name = [t for t in at.text_input if t.label == "氏名" and t.key != "edit_name"][0]
+    create_code.input("0015")
+    create_name.input("重複")
+    [b for b in at.button if b.label == "登録"][0].click()
+    at.run()
+    assert not at.exception
+    assert any("すでに登録されています" in e.value for e in at.error)
+
+    conn = get_connection(str(db_path))
+    assert [s.staff_name for s in repo.list_staff(conn)] == ["既存"]
+    conn.close()
+
+
+def test_staff_page_edit_form_updates_skill_and_code(db_path):
+    conn = get_connection(str(db_path))
+    staff_id = repo.create_staff(conn, "0001", "山田", CLEANER, 2)
     conn.close()
 
     at = AppTest.from_file(_page("pages/01_staff.py"), default_timeout=30)
     at.run()
     assert not at.exception
 
-    # 編集フォーム: selectbox[4]=edit_skill_level（唯一の登録済みスタッフが選択済み）
-    at.selectbox[4].select(5)
-    submit = [b for b in at.button if b.label == "更新"]
-    assert submit, "edit submit button not found"
-    submit[0].click()
+    at.text_input(key="edit_employee_code").input("0100")
+    at.selectbox(key="edit_skill_level").select(5)
+    [b for b in at.button if b.label == "更新"][0].click()
     at.run()
     assert not at.exception
 
@@ -151,111 +178,25 @@ def test_staff_page_edit_form_updates_skill_level(db_path):
     updated = repo.get_staff(conn, staff_id)
     conn.close()
     assert updated.skill_level == 5
+    assert updated.employee_code == "0100"
 
 
 # ---------------------------------------------------------------------------
-# 02〜04 renders with seeded data
+# 03 日別必要条件
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "page",
-    [
-        "pages/02_monthly_conditions.py",
-        "pages/03_preferences.py",
-        "pages/04_requirements.py",
-    ],
-)
-def test_pages_render_with_seeded_data(db_path, page):
-    _seed_staff_and_month(db_path)
-    at = AppTest.from_file(_page(page), default_timeout=30)
+def test_requirements_page_saves_skill_columns(db_path):
+    at = AppTest.from_file(_page("pages/03_requirements.py"), default_timeout=30)
+    at.run()
+    assert not at.exception
+    [b for b in at.button if b.label == "保存"][0].click()
     at.run()
     assert not at.exception
 
-
-# ---------------------------------------------------------------------------
-# 05 生成: ボタン押下でシフトが生成されること
-# ---------------------------------------------------------------------------
-
-
-def test_generate_page_creates_schedule(db_path):
-    _seed_staff_and_month(db_path)
-    at = AppTest.from_file(_page("pages/05_generate.py"), default_timeout=30)
-    at.run()
-    assert not at.exception
-
-    # 「シフト生成を実行」ボタンをクリック
-    buttons = [b for b in at.button if "シフト生成を実行" in (b.label or "")]
-    assert buttons, "generate button not found"
-    buttons[0].click().run()
-    assert not at.exception
-
     conn = get_connection(str(db_path))
-    month = repo.get_schedule_month(conn, YM)
-    assert month is not None
-    assert month.status == "DRAFT"
-    assignments = repo.load_assignments(conn, YM)
-    assert len(assignments) > 0
+    ym = at.session_state["year_month"]
+    reqs = repo.get_daily_requirements(conn, ym)
     conn.close()
-
-
-# ---------------------------------------------------------------------------
-# 06 シフト確認: 生成後に表が描画され、確定できること
-# ---------------------------------------------------------------------------
-
-
-def test_schedule_page_renders_and_confirms_after_generation(db_path):
-    _seed_staff_and_month(db_path)
-    conn = get_connection(str(db_path))
-    outcome = services.generate_and_save(conn, YM)
-    assert outcome.saved
-    conn.close()
-
-    at = AppTest.from_file(_page("pages/06_schedule.py"), default_timeout=30)
-    at.run()
-    assert not at.exception
-    assert len(at.dataframe) > 0
-
-    confirm_buttons = [b for b in at.button if "確定する" in (b.label or "")]
-    assert confirm_buttons, "confirm button not found"
-    confirm_buttons[0].click().run()
-    assert not at.exception
-
-    conn = get_connection(str(db_path))
-    month = repo.get_schedule_month(conn, YM)
-    assert month.status == "CONFIRMED"
-    conn.close()
-
-    # 確定後に再度開くと編集フォームが表示されない（ScheduleConfirmedErrorが表に出ない）こと
-    at2 = AppTest.from_file(_page("pages/06_schedule.py"), default_timeout=30)
-    at2.run()
-    assert not at2.exception
-    edit_forms = [f for f in at2.get("form") if "manual_edit_form" in f.key]
-    assert edit_forms == []
-
-
-def test_schedule_page_unconfirm_restores_editing(db_path):
-    _seed_staff_and_month(db_path)
-    conn = get_connection(str(db_path))
-    assert services.generate_and_save(conn, YM).saved
-    assert services.confirm_month(conn, YM).confirmed
-    conn.close()
-
-    at = AppTest.from_file(_page("pages/06_schedule.py"), default_timeout=30)
-    at.run()
-    assert not at.exception
-    button = [b for b in at.button if b.label == "確定を解除する"][0]
-    assert button.disabled  # 確認チェック前は押せない
-
-    at.checkbox(key="unconfirm_agree").check().run()
-    [b for b in at.button if b.label == "確定を解除する"][0].click().run()
-    assert not at.exception
-
-    conn = get_connection(str(db_path))
-    assert repo.get_schedule_month(conn, YM).status == "DRAFT"
-    conn.close()
-
-    at2 = AppTest.from_file(_page("pages/06_schedule.py"), default_timeout=30)
-    at2.run()
-    assert not at2.exception
-    assert [f for f in at2.get("form") if "manual_edit_form" in f.key]
+    assert len(reqs) == len(get_month_dates(ym))
+    assert all((r.required_skill_level, r.required_skill_count) == (None, 0) for r in reqs)

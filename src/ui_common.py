@@ -1,4 +1,4 @@
-"""Streamlit画面共通のヘルパー（T60〜T84のUI共通処理）.
+"""Streamlit画面共通のヘルパー.
 
 業務ロジックは持たない。DB接続・月選択・表示補助のみを提供する。
 """
@@ -13,7 +13,8 @@ from src.constants import SKILL_LEVELS
 from src.database import get_connection, initialize_database
 from src.models import ValidationError
 
-DB_PATH_ENV = "STAFF_SHIFT_DB_PATH"
+# 元アプリ（STAFF_SHIFT_DB_PATH）と同じDBへ接続しないよう専用の変数名を使う
+DB_PATH_ENV = "CLEANING_STAFF_VALIDATOR_DB_PATH"
 
 WEEKDAY_LABELS_JA = ("月", "火", "水", "木", "金", "土", "日")
 
@@ -102,12 +103,3 @@ def show_errors(errors: list[ValidationError]) -> None:
         text = f"[{prefix}] {err.message}" if prefix else err.message
         st.error(text)
 
-
-def confirmed_banner(conn: sqlite3.Connection, year_month: str) -> bool:
-    """対象月が確定済みならst.infoを表示してTrueを返す."""
-    from src import services
-
-    if services.is_confirmed(conn, year_month):
-        st.info("この月は確定済みです（編集不可）")
-        return True
-    return False

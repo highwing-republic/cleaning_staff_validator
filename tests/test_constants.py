@@ -5,25 +5,28 @@ def test_role_codes():
     assert c.ROLE_CODES == ("LEADER", "CHECKER", "CLEANER")
 
 
-def test_preference_types():
-    assert c.PREFERENCE_TYPES == ("UNAVAILABLE", "PREFER_OFF", "PREFER_WORK")
+def test_skill_levels():
+    assert (c.SKILL_LEVEL_MIN, c.SKILL_LEVEL_MAX, c.SKILL_LEVEL_DEFAULT) == (1, 5, 3)
+    assert sorted(c.SKILL_LEVELS) == [1, 2, 3, 4, 5]
 
 
-def test_schedule_status():
-    assert c.SCHEDULE_STATUS == ("DRAFT", "CONFIRMED")
+def test_shift_types():
+    assert c.SHIFT_TYPES == ("TIME_RANGE", "OTHER_DUTY", "BLANK", "UNKNOWN")
 
 
-def test_source_types():
-    assert c.SOURCE_TYPES == ("OPTIMIZED", "MANUAL")
+def test_import_statuses():
+    assert c.IMPORT_STATUSES == ("ACTIVE", "SUPERSEDED")
 
 
-def test_solver_settings():
-    assert c.TOTAL_SOLVE_TIME_LIMIT_SECONDS == 10.0
-    assert isinstance(c.TOTAL_SOLVE_TIME_LIMIT_SECONDS, float)
-    assert c.SOLVER_RANDOM_SEED == 42
-    assert c.SOLVER_NUM_WORKERS == 1
-    assert c.SOLVER_CP_MODEL_PRESOLVE is False
-
-
-def test_solver_statuses():
-    assert c.SOLVER_STATUSES == ("OPTIMAL", "FEASIBLE", "INFEASIBLE", "UNKNOWN")
+def test_generation_constants_removed():
+    for name in (
+        "PREFERENCE_TYPES",
+        "PREFERENCE_PREFER_OFF",
+        "PREFERENCE_PREFER_WORK",
+        "SCHEDULE_STATUS",
+        "SOURCE_TYPES",
+        "SOLVER_STATUSES",
+        "STAGES",
+        "TOTAL_SOLVE_TIME_LIMIT_SECONDS",
+    ):
+        assert not hasattr(c, name), name

@@ -1,4 +1,4 @@
-"""T70/T71: CSV/Excel日別必要人数インポートのテスト."""
+"""日別必要条件CSV/Excelインポートのテスト."""
 
 import io
 
@@ -191,3 +191,52 @@ def test_normalize_requirements_empty_optional_cells_become_none():
     assert daily[0].occupancy_rate is None
     assert daily[0].max_total_staff is None
     assert daily[0].note is None
+
+
+def test_normalize_requirements_role_sum_above_minimum_is_accepted():
+    """最低人数は完全一致人数ではないため、ロール合計が上回っても取り込める."""
+    df = pd.DataFrame([{"日付": "2026-10-01", "最低人数": 5, "LEADER": 3, "CHECKER": 3}])
+    daily, role, errors = normalize_requirements(df, YM, ROLES)
+    assert errors == []
+    assert daily[0].required_total_staff == 5
+    assert sum(r.required_count for r in role) == 6
+
+
+def test_normalize_requirements_skill_columns():
+    df = pd.DataFrame(
+        [
+            {"日付": "2026-10-01", "最低人数": 5, "必要スキルLv": 4, "必要スキル人数": 2},
+            {"日付": "2026-10-02", "最低人数": 5, "必要スキルLv": "", "必要スキル人数": ""},
+        ]
+    )
+    daily, role, errors = normalize_requirements(df, YM, ROLES)
+    assert errors == []
+    assert (daily[0].required_skill_level, daily[0].required_skill_count) == (4, 2)
+    assert (daily[1].required_skill_level, daily[1].required_skill_count) == (None, 0)
+
+
+def test_normalize_requirements_skill_columns_absent_default_to_no_condition():
+    df = pd.DataFrame([{"日付": "2026-10-01", "最低人数": 5}])
+    daily, role, errors = normalize_requirements(df, YM, ROLES)
+    assert errors == []
+    assert (daily[0].required_skill_level, daily[0].required_skill_count) == (None, 0)
+
+
+@pytest.mark.parametrize(
+    "level,count,fragment",
+    [
+        ("abc", 1, "必要スキルLv"),
+        (4, "x", "必要スキル人数"),
+        (6, 1, "必要スキルレベル"),
+        ("", 2, "必要スキルレベル"),
+    ],
+)
+def test_normalize_requirements_skill_errors(level, count, fragment):
+    df = pd.DataFrame(
+        [{"日付": "2026-10-01", "最低人数": 5, "必要スキルLv": level, "必要スキル人数": count}]
+    )
+    daily, role, errors = normalize_requirements(df, YM, ROLES)
+    assert daily == []
+    assert len(errors) == 1
+    assert "2行目" in errors[0].message
+    assert fragment in errors[0].message

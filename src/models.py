@@ -1,62 +1,45 @@
-"""アプリ内で受け渡すデータ型（§41）.
+"""アプリ内で受け渡すデータ型."""
 
-T05で固定。以降、破壊的変更禁止（フィールド追加はデフォルト値付きのみ）。
-"""
+from dataclasses import dataclass
 
-from dataclasses import dataclass, field
-
-from src.constants import (
-    PREFERENCE_TYPES,
-    SKILL_LEVEL_DEFAULT,
-    SOLVER_STATUS_FEASIBLE,
-    SOLVER_STATUS_OPTIMAL,
-    SOLVER_STATUSES,
-    STAGES,
-)
+from src.constants import IMPORT_STATUSES, SHIFT_TYPES, SKILL_LEVEL_DEFAULT
 
 
 # ---------------------------------------------------------------------------
-# Input
+# Master / Requirement
 # ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
 class StaffInput:
-    """スタッフマスター + 通常勤務可能曜日."""
+    """スタッフマスター. 勤怠CSVとの照合キーは employee_code（文字列）."""
 
     staff_id: int
+    employee_code: str
     staff_name: str
     role_id: int
-    daily_work_minutes: int
-    max_consecutive_days: int
-    active: bool = True
-    # weekday(0=Monday..6=Sunday) -> is_available。7曜日揃っていない場合はPC04で検出する
-    weekday_availability: dict[int, bool] = field(default_factory=dict)
-    # 清掃業務の総合スキル(1〜5)。表示・保存のみに使用し、シフト最適化には使用しない（§25-§28）
+    # 清掃業務の総合スキル(1〜5)
     skill_level: int = SKILL_LEVEL_DEFAULT
-
-    def is_available_on(self, weekday: int) -> bool:
-        """通常勤務可能曜日か. データ欠落時はFalse."""
-        return self.weekday_availability.get(weekday, False)
-
-
-@dataclass(frozen=True)
-class MonthlyConditionInput:
-    staff_id: int
-    year_month: str
-    target_monthly_minutes: int
-    min_monthly_minutes: int | None = None
-    max_monthly_minutes: int | None = None
-    carryover_consecutive_days: int = 0
+    department: str | None = None
+    active: bool = True
 
 
 @dataclass(frozen=True)
 class DailyRequirementInput:
+    """日別の必要条件.
+
+    required_total_staff は最低必要人数（完全一致人数ではない）。
+    スキル条件は「skill_level >= required_skill_level の清掃勤務者が required_skill_count 名以上」。
+    required_skill_count = 0 ならスキル条件なし。
+    """
+
     work_date: str
     required_total_staff: int
     max_total_staff: int | None = None
     occupancy_rate: float | None = None
     note: str | None = None
+    required_skill_level: int | None = None
+    required_skill_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -66,111 +49,62 @@ class RoleRequirementInput:
     required_count: int
 
 
-@dataclass(frozen=True)
-class PreferenceInput:
-    staff_id: int
-    work_date: str
-    preference_type: str
-
-    def __post_init__(self) -> None:
-        if self.preference_type not in PREFERENCE_TYPES:
-            raise ValueError(f"invalid preference_type: {self.preference_type!r}")
-
-
-@dataclass(frozen=True)
-class LockedAssignmentInput:
-    """固定セル. is_working=True なら固定出勤(HC11)、False なら固定休日(HC12)."""
-
-    staff_id: int
-    work_date: str
-    is_working: bool
-
-
-@dataclass(frozen=True)
-class SchedulerInput:
-    """Solverへの入力一式. staffにはinactiveを含んでよい（Solver側で除外する）."""
-
-    year_month: str
-    staff: list[StaffInput] = field(default_factory=list)
-    monthly_conditions: list[MonthlyConditionInput] = field(default_factory=list)
-    daily_requirements: list[DailyRequirementInput] = field(default_factory=list)
-    role_requirements: list[RoleRequirementInput] = field(default_factory=list)
-    preferences: list[PreferenceInput] = field(default_factory=list)
-    locked_assignments: list[LockedAssignmentInput] = field(default_factory=list)
-
-
 # ---------------------------------------------------------------------------
-# Result
+# Attendance
 # ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
-class AssignmentResult:
-    staff_id: int
-    work_date: str
-    is_working: bool
+class AttendanceShiftInput:
+    """勤怠CSVの1セル（1従業員 × 1日）.
 
-
-@dataclass(frozen=True)
-class StageObjectiveResult:
-    """段階最適化の1Stage分の結果. 実行したStageのみ作る."""
-
-    stage: int  # 1..len(STAGES)
-    solver_status: str
-    objective_value: int | None = None
-
-    def __post_init__(self) -> None:
-        if self.stage not in STAGES:
-            raise ValueError(f"invalid stage: {self.stage!r}")
-        if self.solver_status not in SOLVER_STATUSES:
-            raise ValueError(f"invalid solver_status: {self.solver_status!r}")
-
-
-@dataclass(frozen=True)
-class SchedulerResult:
-    """Solver全体の結果（§37, §38.4, §41）.
-
-    INFEASIBLE / UNKNOWN 時は assignments = []。未実行Stageのobjective値は None。
-    objective_overstaff は最適化対象ではなく、解の「最低人数を超える出勤」合計（v1.4）。
+    staff_id は staff マスターと照合できない場合 None（未登録スタッフ）。
+    raw_shift は元CSVの値をそのまま保持する（UNKNOWNでも失わない）。
+    start_minutes / end_minutes は0時起点の分。24時超え（例 30:00 = 1800）も有効。
     """
 
-    status: str
-    assignments: list[AssignmentResult] = field(default_factory=list)
-    completed_stage: int = 0
-
-    objective_overstaff: int | None = None
-    objective_target_deviation: int | None = None
-    objective_prefer_off: int | None = None
-    objective_prefer_work: int | None = None
-
-    stage_results: list[StageObjectiveResult] = field(default_factory=list)
-
-    # v1.4 追加（Stage 2: 差の最大値 / Stage 3: 日別超過人数の最大値）
-    objective_max_deviation: int | None = None
-    objective_max_overstaff: int | None = None
+    employee_code: str
+    work_date: str
+    raw_shift: str
+    shift_type: str
+    available_for_cleaning: bool
+    staff_id: int | None = None
+    employee_name: str | None = None
+    department: str | None = None
+    start_minutes: int | None = None
+    end_minutes: int | None = None
 
     def __post_init__(self) -> None:
-        if self.status not in SOLVER_STATUSES:
-            raise ValueError(f"invalid status: {self.status!r}")
-        if not 0 <= self.completed_stage <= len(STAGES):
-            raise ValueError(f"invalid completed_stage: {self.completed_stage!r}")
+        if self.shift_type not in SHIFT_TYPES:
+            raise ValueError(f"invalid shift_type: {self.shift_type!r}")
 
-    @property
-    def has_solution(self) -> bool:
-        """保存可能なシフトがあるか（OPTIMAL / FEASIBLE, T74）."""
-        return self.status in (SOLVER_STATUS_OPTIMAL, SOLVER_STATUS_FEASIBLE)
+
+@dataclass(frozen=True)
+class AttendanceImportRecord:
+    import_id: int
+    year_month: str
+    source_filename: str
+    imported_at: str
+    employee_count: int
+    shift_count: int
+    unmatched_count: int
+    status: str
+
+    def __post_init__(self) -> None:
+        if self.status not in IMPORT_STATUSES:
+            raise ValueError(f"invalid status: {self.status!r}")
 
 
 # ---------------------------------------------------------------------------
-# Validation / Precheck
+# Validation
 # ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
 class ValidationError:
-    """入力検証・事前チェック・シフト検証で共通の違反1件.
+    """入力検証・日別検証で共通の違反1件.
 
-    例外ではなく値として返す。code は "PC05" 等のチェックID、または検証項目名。
+    例外ではなく値として返す。code は検証項目名。
     """
 
     code: str
@@ -179,12 +113,3 @@ class ValidationError:
     work_date: str | None = None
     role_id: int | None = None
     field_name: str | None = None
-
-
-@dataclass(frozen=True)
-class PrecheckResult:
-    errors: list[ValidationError] = field(default_factory=list)
-
-    @property
-    def is_ok(self) -> bool:
-        return not self.errors
