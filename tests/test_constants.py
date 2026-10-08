@@ -18,10 +18,13 @@ def test_import_statuses():
     assert c.IMPORT_STATUSES == ("ACTIVE", "SUPERSEDED")
 
 
-def test_generation_constants_removed():
-    """自動シフト生成（OR-Tools）由来の定数を持ち込まないこと.
+def test_old_generation_constants_not_reintroduced():
+    """元アプリ（月間シフト自動作成）由来の定数を持ち込まないこと.
 
-    PREFERENCE_PREFER_OFF はPhase 6の勤務希望で正式に扱うため対象から外した。
+    Phase 8でシフト生成を再導入したが、旧アプリの設計をそのまま復活させない。
+    SOLVER_STATUSES はPhase 8で新たに定義したため対象から外した
+    （時間上限も旧 TOTAL_SOLVE_TIME_LIMIT_SECONDS ではなく SOLVE_TIME_LIMIT_SECONDS）。
+    PREFERENCE_PREFER_OFF はPhase 6の勤務希望で正式に扱うため対象外。
     PREFERENCE_TYPES は希望を種別の行で持つ旧モデルの名残で、現在は1日1行の
     真偽値列で表すため存在しない。PREFERENCE_PREFER_WORK（勤務したい）は未採用。
     """
@@ -30,11 +33,28 @@ def test_generation_constants_removed():
         "PREFERENCE_PREFER_WORK",
         "SCHEDULE_STATUS",
         "SOURCE_TYPES",
-        "SOLVER_STATUSES",
         "STAGES",
         "TOTAL_SOLVE_TIME_LIMIT_SECONDS",
     ):
         assert not hasattr(c, name), name
+
+
+def test_generation_statuses():
+    assert c.GENERATION_STATUSES == ("OK", "SHORTAGE", "REQUIREMENT_MISSING")
+
+
+def test_solver_statuses():
+    assert c.SOLVER_STATUSES == (
+        "OPTIMAL",
+        "FEASIBLE",
+        "INFEASIBLE",
+        "MODEL_INVALID",
+        "UNKNOWN",
+    )
+
+
+def test_solve_time_limit_is_positive():
+    assert c.SOLVE_TIME_LIMIT_SECONDS > 0
 
 
 def test_preference_kinds():

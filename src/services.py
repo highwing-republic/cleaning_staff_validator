@@ -16,9 +16,13 @@ from src.models import (
     AttendanceShiftInput,
     DailyRequirementInput,
     DailyRequirementView,
+    GenerationDay,
+    GenerationRequest,
+    GenerationStaff,
     ImportIssue,
     MonthlyValidationResult,
     RoleRequirementInput,
+    ScheduleGenerationResult,
     SpecialSkill,
     StaffDatePreferenceInput,
     StaffDayCondition,
@@ -26,6 +30,7 @@ from src.models import (
     StaffInput,
     ValidationError,
 )
+from src.shift_generation import generate_shift
 from src.staffing_validation import validate_month_staffing
 from src.validation import (
     PREFERENCE_STAFF_NOT_FOUND,
@@ -421,4 +426,94 @@ def save_period_requirements(
         return errors
     repo.save_period_requirements(conn, work_dates, requirements, role_requirements)
     return []
+
+
+# ---------------------------------------------------------------------------
+# シフト生成（Phase 8）
+# ---------------------------------------------------------------------------
+
+
+def build_generation_request(
+    conn: sqlite3.Connection,
+    work_dates: list[str],
+    prior_work_history: dict[int, set[str]] | None = None,
+    time_limit_seconds: float | None = None,
+) -> GenerationRequest:
+    """DBから生成に必要なデータを集め、Solver用の入力へ変換する.
+
+    Solver本体はDBを知らないため、通常勤務曜日・勤務希望はここで
+    resolve_period_conditions による実効条件へ畳み込んで渡す。
+    無効（active=0）のスタッフは候補に含めない。
+    """
+    if not work_dates:
+        return GenerationRequest(work_dates=[], staff=[], days=[])
+
+    first, last = work_dates[0], work_dates[-1]
+
+    preferences_by_staff: dict[int, dict[str, StaffDatePreferenceInput]] = {}
+    for pref in repo.list_preferences_in_period(conn, first, last):
+        preferences_by_staff.setdefault(pref.staff_id, {})[pref.work_date] = pref
+
+    staff: list[GenerationStaff] = []
+    for detail in repo.list_staff_details(conn, include_inactive=False):
+        conditions = {
+            condition.work_date: condition
+            for condition in resolve_period_conditions(
+                detail, work_dates, preferences_by_staff.get(detail.staff.staff_id, {})
+            )
+        }
+        staff.append(
+            GenerationStaff(
+                staff_id=detail.staff.staff_id,
+                employee_code=detail.staff.employee_code,
+                staff_name=detail.staff.staff_name,
+                role_id=detail.staff.role_id,
+                skill_level=detail.staff.skill_level,
+                day_conditions=conditions,
+                max_consecutive_days=detail.staff.max_consecutive_days,
+            )
+        )
+
+    days = [
+        _to_generation_day(view) for view in get_period_requirements(conn, work_dates)
+    ]
+
+    return GenerationRequest(
+        work_dates=list(work_dates),
+        staff=staff,
+        days=days,
+        prior_work_history=prior_work_history or {},
+        time_limit_seconds=time_limit_seconds,
+    )
+
+
+def _to_generation_day(view: DailyRequirementView) -> GenerationDay:
+    """要件未設定の日は requirement_is_set=False で渡す（制約を設定しない）."""
+    if not view.is_defined:
+        return GenerationDay(work_date=view.work_date)
+
+    requirement = view.requirement
+    return GenerationDay(
+        work_date=view.work_date,
+        requirement_is_set=True,
+        required_total_staff=requirement.required_total_staff,
+        max_total_staff=requirement.max_total_staff,
+        role_requirements=dict(view.role_counts),
+        required_skill_level=requirement.required_skill_level,
+        required_skill_count=requirement.required_skill_count,
+        reserved_rooms=requirement.reserved_rooms,
+    )
+
+
+def generate_schedule(
+    conn: sqlite3.Connection,
+    work_dates: list[str],
+    prior_work_history: dict[int, set[str]] | None = None,
+    time_limit_seconds: float | None = None,
+) -> ScheduleGenerationResult:
+    """対象期間の勤務案を生成する（DBへは保存しない）."""
+    request = build_generation_request(
+        conn, work_dates, prior_work_history, time_limit_seconds
+    )
+    return generate_shift(request)
 

@@ -11,6 +11,7 @@ USAGE_STEPS = [
     "③ 予約・必要人数（対象期間の日別の必要清掃体制を登録）",
     "④ 日別検証結果の確認・Excel出力",
     "⑤ 勤務希望入力（対象期間の「普段と違う希望だけ」を登録）",
+    "⑥ シフト生成（勤務案の自動作成）",
 ]
 
 
@@ -21,6 +22,7 @@ MENU_PAGES = [
     ("pages/03_requirements.py", "③ 予約・必要人数"),
     ("pages/04_validation.py", "④ 日別検証"),
     ("pages/05_preferences.py", "⑤ 勤務希望入力"),
+    ("pages/06_generate.py", "⑥ シフト生成"),
 ]
 
 

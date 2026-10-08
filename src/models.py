@@ -3,9 +3,13 @@
 from dataclasses import dataclass, field
 
 from src.constants import (
+    GENERATION_STATUS_OK,
+    GENERATION_STATUSES,
     IMPORT_STATUSES,
     SHIFT_TYPES,
     SKILL_LEVEL_DEFAULT,
+    SOLVER_STATUS_OPTIMAL,
+    SOLVER_STATUSES,
     TIME_STATUSES,
     VALIDATION_STATUSES,
 )
@@ -385,3 +389,163 @@ class ValidationError:
     work_date: str | None = None
     role_id: int | None = None
     field_name: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Shift generation（Phase 8）
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class GenerationStaff:
+    """シフト生成に渡すスタッフ1名. DB行ではなくSolver専用の入力型.
+
+    day_conditions は work_date -> StaffDayCondition（通常条件と勤務希望を
+    突き合わせた結果）。Solverは曜日・勤務希望を直接見ず、この結果だけを使う。
+    max_consecutive_days が None なら連勤の上限なし。
+    """
+
+    staff_id: int
+    employee_code: str
+    staff_name: str
+    role_id: int
+    skill_level: int
+    day_conditions: dict[str, StaffDayCondition] = field(default_factory=dict)
+    max_consecutive_days: int | None = None
+
+
+@dataclass(frozen=True)
+class GenerationDay:
+    """シフト生成に渡す1日分の需要.
+
+    requirement_is_set=False は要件未設定（daily_requirements に行がない）。
+    その日は人数・Role・Skillの制約を設定しない。
+    reserved_rooms / occupancy_rate は参考値で、Phase 8 の制約には使わない。
+    """
+
+    work_date: str
+    requirement_is_set: bool = False
+    required_total_staff: int = 0
+    max_total_staff: int | None = None
+    role_requirements: dict[int, int] = field(default_factory=dict)
+    required_skill_level: int | None = None
+    required_skill_count: int = 0
+    reserved_rooms: int | None = None
+
+
+@dataclass(frozen=True)
+class GenerationRequest:
+    """シフト生成の入力一式（DB・Streamlitに依存しない）.
+
+    prior_work_history は staff_id -> 期間開始直前の勤務日（'YYYY-MM-DD'）の集合。
+    期間境界をまたぐ連勤を正しく数えるために使う。
+    """
+
+    work_dates: list[str]
+    staff: list[GenerationStaff]
+    days: list[GenerationDay]
+    prior_work_history: dict[int, set[str]] = field(default_factory=dict)
+    time_limit_seconds: float | None = None
+
+
+@dataclass(frozen=True)
+class GenerationIssue:
+    """生成時に検出した問題1件. code は安定した識別子（例 STAFF_SHORTAGE）."""
+
+    code: str
+    message: str
+    work_date: str | None = None
+    staff_id: int | None = None
+    staff_name: str | None = None
+    role_id: int | None = None
+    shortage: int | None = None
+
+
+@dataclass(frozen=True)
+class GeneratedAssignment:
+    """生成された1スタッフ×1日の勤務. 休みの場合は時刻を持たない."""
+
+    work_date: str
+    staff_id: int
+    staff_name: str
+    is_working: bool
+    start_time: str | None = None
+    end_time: str | None = None
+
+
+@dataclass(frozen=True)
+class DailyGenerationResult:
+    """1日分の生成結果と不足.
+
+    role_shortages は role_id -> 不足人数（0の分は含めない）。
+    status は GENERATION_STATUS_*（既存の検証statusとは別系統）。
+    """
+
+    work_date: str
+    status: str
+    requirement_is_set: bool
+    scheduled_staff_count: int
+    required_total_staff: int | None = None
+    staff_shortage: int = 0
+    role_shortages: dict[int, int] = field(default_factory=dict)
+    skill_shortage: int = 0
+    excluded_staff_count: int = 0
+
+    def __post_init__(self) -> None:
+        if self.status not in GENERATION_STATUSES:
+            raise ValueError(f"invalid status: {self.status!r}")
+
+    @property
+    def total_shortage(self) -> int:
+        return self.staff_shortage + sum(self.role_shortages.values()) + self.skill_shortage
+
+    @property
+    def has_shortage(self) -> bool:
+        return self.total_shortage > 0
+
+
+@dataclass(frozen=True)
+class ScheduleGenerationResult:
+    """期間分の生成結果.
+
+    solver_status は CP-SAT の結果をラップしたもの（SOLVER_STATUS_*）。
+    不足を変数として許容するため、通常の入力では INFEASIBLE にはならない。
+    assignments は出勤・休みの両方を含む（is_working で区別する）。
+    """
+
+    work_dates: list[str]
+    solver_status: str = SOLVER_STATUS_OPTIMAL
+    days: list[DailyGenerationResult] = field(default_factory=list)
+    assignments: list[GeneratedAssignment] = field(default_factory=list)
+    issues: list[GenerationIssue] = field(default_factory=list)
+    solve_seconds: float = 0.0
+
+    def __post_init__(self) -> None:
+        if self.solver_status not in SOLVER_STATUSES:
+            raise ValueError(f"invalid solver_status: {self.solver_status!r}")
+
+    @property
+    def has_solution(self) -> bool:
+        return bool(self.days)
+
+    @property
+    def total_shortage(self) -> int:
+        return sum(d.total_shortage for d in self.days)
+
+    @property
+    def total_workdays(self) -> int:
+        return sum(1 for a in self.assignments if a.is_working)
+
+    @property
+    def shortage_days(self) -> list[DailyGenerationResult]:
+        return [d for d in self.days if d.has_shortage]
+
+    def working_assignments(self, staff_id: int) -> list[GeneratedAssignment]:
+        return [a for a in self.assignments if a.staff_id == staff_id and a.is_working]
+
+    def issues_with_code(self, code: str) -> list[GenerationIssue]:
+        return [i for i in self.issues if i.code == code]
+
+    def count_status(self, status: str) -> int:
+        return sum(1 for d in self.days if d.status == status)
+

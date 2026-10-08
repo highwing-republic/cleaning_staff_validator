@@ -13,7 +13,11 @@ from attendance_csv import make_csv
 from src import repositories as repo
 from src import services
 from src.database import get_connection, initialize_database
-from src.models import DailyRequirementInput
+from src.models import (
+    DailyRequirementInput,
+    RoleRequirementInput,
+    StaffDatePreferenceInput,
+)
 from src.month_utils import get_month_dates
 from src.ui_common import DB_PATH_ENV
 
@@ -28,6 +32,7 @@ PAGES = [
     "pages/03_requirements.py",
     "pages/04_validation.py",
     "pages/05_preferences.py",
+    "pages/06_generate.py",
 ]
 
 
@@ -1156,6 +1161,285 @@ def test_preference_switching_staff_does_not_carry_unsaved_input(db_path):
     _save_preferences(at)
     assert _saved(db_path, part, target) is None
     assert _saved(db_path, full, target) is None
+
+
+# ---------------------------------------------------------------------------
+# 06 シフト生成（Phase 8）
+# ---------------------------------------------------------------------------
+
+GENERATE_PAGE = "pages/06_generate.py"
+GENERATE_BUTTON = "勤務案を作成"
+
+
+def _open_generate_page():
+    at = AppTest.from_file(_page(GENERATE_PAGE), default_timeout=120)
+    at.run()
+    assert not at.exception
+    return at
+
+
+def _generate_dates(at):
+    from src.period_utils import period_dates
+
+    start = at.session_state["generation_period_start"]
+    days = at.session_state["generation_period_days"]
+    return period_dates(start.isoformat(), int(days))
+
+
+def _click_generate(at):
+    [b for b in at.button if b.label == GENERATE_BUTTON][0].click()
+    at.run()
+    assert not at.exception
+    return at
+
+
+def _seed_generation_staff(db_path, **kwargs):
+    conn = get_connection(str(db_path))
+    ids = {
+        "leader": repo.create_staff(
+            conn, "0101", "リーダー田中", LEADER, 5, "清掃",
+            standard_start_time="09:00", standard_end_time="15:30",
+            weekdays=[0, 1, 2, 3, 4, 5, 6], **kwargs,
+        ),
+        "cleaner": repo.create_staff(
+            conn, "0102", "清掃Aさん", CLEANER, 4, "清掃",
+            standard_start_time="09:00", standard_end_time="15:30",
+            weekdays=[0, 1, 2, 3, 4, 5, 6], **kwargs,
+        ),
+        "part": repo.create_staff(
+            conn, "0103", "短時間Bさん", CLEANER, 2, "清掃",
+            standard_start_time="09:00", standard_end_time="13:00",
+            weekdays=[0, 1, 2, 3, 4, 5, 6], **kwargs,
+        ),
+    }
+    conn.close()
+    return ids
+
+
+def _seed_generation_requirements(db_path, dates, requirements, role_requirements=()):
+    conn = get_connection(str(db_path))
+    repo.save_period_requirements(conn, dates, requirements, list(role_requirements))
+    conn.close()
+
+
+def test_generate_page_runs_without_staff(db_path):
+    at = AppTest.from_file(_page(GENERATE_PAGE), default_timeout=120)
+    at.run()
+    assert not at.exception
+    assert any("スタッフ" in i.value for i in at.info)
+
+
+def test_generate_page_opens_with_staff(db_path):
+    _seed_generation_staff(db_path)
+    at = _open_generate_page()
+    assert any("シフト生成" in str(t.value) for t in at.title)
+
+
+def test_generate_page_offers_period_selection(db_path):
+    _seed_generation_staff(db_path)
+    at = _open_generate_page()
+    assert [d.label for d in at.date_input] == ["開始日"]
+    assert any(s.label == "期間" for s in at.selectbox)
+
+
+def test_generate_period_never_exceeds_fourteen_days(db_path):
+    from src.period_utils import PERIOD_MAX_DAYS
+
+    _seed_generation_staff(db_path)
+    at = _open_generate_page()
+    options = at.selectbox(key="generation_period_days").options
+    day_counts = [int(str(o).replace("日間", "")) for o in options]
+    assert max(day_counts) == PERIOD_MAX_DAYS
+    assert len(_generate_dates(at)) <= PERIOD_MAX_DAYS
+
+
+def test_generate_page_shows_pre_generation_summary(db_path):
+    _seed_generation_staff(db_path)
+    at = _open_generate_page()
+    metrics = {m.label: m.value for m in at.metric}
+    assert metrics["有効スタッフ数"] == "3名"
+    assert metrics["対象期間"] == "14日間"
+    assert "要件設定済み日数" in metrics
+    assert "要件未設定日数" in metrics
+
+
+def test_generate_page_has_the_generate_button(db_path):
+    _seed_generation_staff(db_path)
+    at = _open_generate_page()
+    assert [b.label for b in at.button] == [GENERATE_BUTTON]
+
+
+def test_generate_page_does_not_solve_before_the_button_is_pressed(db_path):
+    _seed_generation_staff(db_path)
+    at = _open_generate_page()
+    assert any("勤務案を作成" in i.value for i in at.info)
+    assert "_generation_result" not in at.session_state
+
+
+def test_generate_page_shows_the_assignment_grid(db_path):
+    ids = _seed_generation_staff(db_path)
+    at = _open_generate_page()
+    dates = _generate_dates(at)
+    _seed_generation_requirements(
+        db_path, dates,
+        [DailyRequirementInput(work_date=d, required_total_staff=2) for d in dates],
+    )
+    at = _open_generate_page()
+    _click_generate(at)
+
+    grid = at.dataframe[-2].value
+    assert list(grid["スタッフ"]) == ["リーダー田中", "清掃Aさん", "短時間Bさん"]
+    assert len(grid.columns) == len(dates) + 2      # スタッフ + 出勤日数 + 各日
+    first_day_column = grid.columns[2]
+    values = list(grid[first_day_column])
+    assert any("09:00-15:30" in str(v) for v in values)
+    assert any(str(v) == "休" for v in values)
+
+
+def test_generate_page_shows_effective_time_for_early_leave(db_path):
+    ids = _seed_generation_staff(db_path)
+    at = _open_generate_page()
+    dates = _generate_dates(at)
+    conn = get_connection(str(db_path))
+    repo.save_staff_period_preferences(
+        conn, ids["leader"], dates,
+        [StaffDatePreferenceInput(ids["leader"], dates[0], override_end_time="13:00")],
+    )
+    conn.close()
+    _seed_generation_requirements(
+        db_path, dates,
+        [DailyRequirementInput(work_date=d, required_total_staff=3) for d in dates],
+    )
+    at = _open_generate_page()
+    _click_generate(at)
+
+    grid = at.dataframe[-2].value
+    leader_row = grid[grid["スタッフ"] == "リーダー田中"].iloc[0]
+    assert leader_row[grid.columns[2]] == "09:00-13:00"
+
+
+def test_generate_page_shows_staff_shortage(db_path):
+    _seed_generation_staff(db_path)
+    at = _open_generate_page()
+    dates = _generate_dates(at)
+    _seed_generation_requirements(
+        db_path, dates,
+        [DailyRequirementInput(work_date=d, required_total_staff=5) for d in dates],
+    )
+    at = _open_generate_page()
+    _click_generate(at)
+
+    assert any("2名不足" in w.value for w in at.warning)
+    daily = at.dataframe[-1].value
+    assert list(daily["人数不足"])[0] == "2"
+    assert list(daily["状態"])[0] == "不足"
+
+
+def test_generate_page_shows_role_shortage(db_path):
+    _seed_generation_staff(db_path)
+    at = _open_generate_page()
+    dates = _generate_dates(at)
+    _seed_generation_requirements(
+        db_path, dates,
+        [DailyRequirementInput(work_date=d, required_total_staff=1) for d in dates],
+        [RoleRequirementInput(d, CHECKER, 1) for d in dates],
+    )
+    at = _open_generate_page()
+    _click_generate(at)
+
+    assert any("チェッカー" in w.value for w in at.warning)
+    daily = at.dataframe[-1].value
+    assert list(daily["ロール不足"])[0] == "チェッカー 1名"
+
+
+def test_generate_page_shows_skill_shortage(db_path):
+    _seed_generation_staff(db_path)
+    at = _open_generate_page()
+    dates = _generate_dates(at)
+    _seed_generation_requirements(
+        db_path, dates,
+        [
+            DailyRequirementInput(
+                work_date=d, required_total_staff=1,
+                required_skill_level=5, required_skill_count=2,
+            )
+            for d in dates
+        ],
+    )
+    at = _open_generate_page()
+    _click_generate(at)
+
+    assert any("スキル条件" in w.value for w in at.warning)
+    daily = at.dataframe[-1].value
+    assert list(daily["スキル不足"])[0] == "1名"
+
+
+def test_generate_page_shows_requirement_missing_days(db_path):
+    _seed_generation_staff(db_path)
+    at = _open_generate_page()
+    _click_generate(at)
+
+    daily = at.dataframe[-1].value
+    assert list(daily["状態"])[0] == "要件未設定"
+    assert list(daily["必要"])[0] == "-"
+    assert list(daily["配置"])[0] == 0
+
+
+def test_generate_page_does_not_overstaff(db_path):
+    _seed_generation_staff(db_path)
+    at = _open_generate_page()
+    dates = _generate_dates(at)
+    _seed_generation_requirements(
+        db_path, dates,
+        [DailyRequirementInput(work_date=d, required_total_staff=1) for d in dates],
+    )
+    at = _open_generate_page()
+    _click_generate(at)
+
+    daily = at.dataframe[-1].value
+    assert set(daily["配置"]) == {1}
+    metrics = {m.label: m.value for m in at.metric}
+    assert metrics["総出勤日数"] == f"{len(dates)}日"
+
+
+def test_generate_page_warns_about_staff_without_standard_time(db_path):
+    conn = get_connection(str(db_path))
+    repo.create_staff(
+        conn, "0109", "時間未設定さん", CLEANER, 3, "清掃", weekdays=[0, 1, 2, 3, 4, 5, 6]
+    )
+    conn.close()
+    at = _open_generate_page()
+    assert any("候補から除外" in e.label for e in at.expander)
+
+
+def test_generate_page_result_is_cleared_when_period_changes(db_path):
+    _seed_generation_staff(db_path)
+    at = _open_generate_page()
+    _click_generate(at)
+    assert "_generation_result" in at.session_state
+
+    at.selectbox(key="generation_period_days").select(10)
+    at.run()
+    assert not at.exception
+    assert "_generation_result" not in at.session_state
+    assert any("勤務案を作成" in i.value for i in at.info)
+
+
+def test_generate_page_has_no_save_button(db_path):
+    """Phase 8では生成結果を保存しない."""
+    _seed_generation_staff(db_path)
+    at = _open_generate_page()
+    _click_generate(at)
+    labels = [b.label for b in at.button]
+    assert all("保存" not in label for label in labels)
+
+    conn = get_connection(str(db_path))
+    tables = {
+        row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    }
+    conn.close()
+    assert "schedule_runs" not in tables
+    assert "schedule_assignments" not in tables
 
 
 # ---------------------------------------------------------------------------
