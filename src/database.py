@@ -68,6 +68,18 @@ STAFF_ADDED_COLUMNS: tuple[tuple[str, str], ...] = (
 )
 
 
+# Phase 7 で daily_requirements に追加した列（予約室数）.
+# staff と同様、既存DBへは ALTER TABLE で追加するため CREATE TABLE の末尾と同じ順・
+# 同じ定義にして新規作成DBと移行後DBの列構成・制約を一致させる。
+# NULL（未入力・未確認）と 0（予約室数0）を区別する。
+DAILY_REQUIREMENT_ADDED_COLUMNS: tuple[tuple[str, str], ...] = (
+    (
+        "reserved_rooms",
+        "reserved_rooms INTEGER NULL CHECK (reserved_rooms IS NULL OR reserved_rooms >= 0)",
+    ),
+)
+
+
 class IncompatibleSchemaError(RuntimeError):
     """元アプリ（月間シフト自動作成）のDBに接続した場合."""
 
@@ -102,6 +114,9 @@ def initialize_database(conn: sqlite3.Connection) -> None:
     shift_types = _sql_list(SHIFT_TYPES)
     import_statuses = _sql_list(IMPORT_STATUSES)
     staff_added_columns = ",\n                ".join(ddl for _, ddl in STAFF_ADDED_COLUMNS)
+    requirement_added_columns = ",\n                ".join(
+        ddl for _, ddl in DAILY_REQUIREMENT_ADDED_COLUMNS
+    )
 
     with conn:
         conn.execute(
@@ -237,10 +252,12 @@ def initialize_database(conn: sqlite3.Connection) -> None:
                            OR required_skill_level BETWEEN {SKILL_LEVEL_MIN} AND {SKILL_LEVEL_MAX}),
                 required_skill_count INTEGER NOT NULL DEFAULT 0
                     CHECK (required_skill_count >= 0),
+                {requirement_added_columns},
                 CHECK (required_skill_count = 0 OR required_skill_level IS NOT NULL)
             )
             """
         )
+        _migrate_daily_requirement_columns(conn)
 
         conn.execute(
             """
@@ -343,6 +360,19 @@ def _migrate_staff_columns(conn: sqlite3.Connection) -> None:
     for column, ddl in STAFF_ADDED_COLUMNS:
         if column not in existing:
             conn.execute(f"ALTER TABLE staff ADD COLUMN {ddl}")
+
+
+def _migrate_daily_requirement_columns(conn: sqlite3.Connection) -> None:
+    """既存DBの daily_requirements へPhase 7の列を追加する（冪等, 既存データは保持する）.
+
+    既定値は入れない（予約室数を0で埋めると「予約0室」と「未入力」の区別がつかなくなる）。
+    """
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(daily_requirements)")}
+    if not existing:
+        return
+    for column, ddl in DAILY_REQUIREMENT_ADDED_COLUMNS:
+        if column not in existing:
+            conn.execute(f"ALTER TABLE daily_requirements ADD COLUMN {ddl}")
 
 
 def _ensure_compatible_schema(conn: sqlite3.Connection) -> None:

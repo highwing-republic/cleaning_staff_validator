@@ -4,6 +4,7 @@ from src import validation
 from src.models import DailyRequirementInput, RoleRequirementInput
 from src.validation import (
     REQUIREMENT_REQUIRED_EXCEEDS_MAX,
+    REQUIREMENT_RESERVED_ROOMS_INVALID,
     REQUIREMENT_ROLE_SUM_EXCEEDS_MAX,
     REQUIREMENT_SKILL_COUNT_INVALID,
     REQUIREMENT_SKILL_LEVEL_INVALID,
@@ -307,4 +308,38 @@ def test_standard_conditions_do_not_affect_base_validation():
         STAFF_NAME_REQUIRED,
         STAFF_SKILL_LEVEL_INVALID,
     }
+
+
+# ---------------------------------------------------------------------------
+# validate_daily_requirement: 予約室数（Phase 7）
+# ---------------------------------------------------------------------------
+
+
+class TestValidateReservedRooms:
+    def _codes(self, reserved_rooms, required_total_staff=4):
+        req = DailyRequirementInput(
+            work_date="2026-10-20",
+            required_total_staff=required_total_staff,
+            reserved_rooms=reserved_rooms,
+        )
+        return _codes(validate_daily_requirement(req, []))
+
+    @pytest.mark.parametrize("value", [None, 0, 1, 10, 999])
+    def test_valid(self, value):
+        """NULL（未入力）と0（予約室数0）はどちらも有効."""
+        assert self._codes(value) == []
+
+    @pytest.mark.parametrize("value", [-1, -10, 2.5, "8", True, False])
+    def test_invalid(self, value):
+        assert REQUIREMENT_RESERVED_ROOMS_INVALID in self._codes(value)
+
+    @pytest.mark.parametrize(
+        ("reserved_rooms", "required_total_staff"),
+        [(8, 4), (0, 3), (20, 1), (0, 0), (None, 3)],
+    )
+    def test_no_consistency_check_against_required_staff(
+        self, reserved_rooms, required_total_staff
+    ):
+        """アプリは必要人数を推定しないため、予約室数との整合性は検証しない."""
+        assert self._codes(reserved_rooms, required_total_staff) == []
 

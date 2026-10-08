@@ -140,9 +140,12 @@ class StaffDayCondition:
 class DailyRequirementInput:
     """日別の必要条件.
 
-    required_total_staff は最低必要人数（完全一致人数ではない）。
+    required_total_staff は最低必要人数（完全一致人数ではない）。0も有効な設定で、
+    「要件未設定」はこの行自体が存在しないことで表す。
     スキル条件は「skill_level >= required_skill_level の清掃勤務者が required_skill_count 名以上」。
     required_skill_count = 0 ならスキル条件なし。
+    reserved_rooms は予約室数で、必要人数とは別の入力値（アプリは必要人数を推定しない）。
+    None=未入力/未確認, 0=予約室数0 を区別する。
     """
 
     work_date: str
@@ -152,6 +155,25 @@ class DailyRequirementInput:
     note: str | None = None
     required_skill_level: int | None = None
     required_skill_count: int = 0
+    reserved_rooms: int | None = None
+
+
+@dataclass(frozen=True)
+class DailyRequirementView:
+    """ある1日の要件（画面・サマリー用）.
+
+    requirement=None は「要件未設定」（daily_requirements に行がない）を表す。
+    required_total_staff=0 の「設定済み・必要人数0」とは別の状態。
+    role_counts は role_id -> 必要人数（0は「そのRole条件なし」）。
+    """
+
+    work_date: str
+    requirement: DailyRequirementInput | None = None
+    role_counts: dict[int, int] = field(default_factory=dict)
+
+    @property
+    def is_defined(self) -> bool:
+        return self.requirement is not None
 
 
 @dataclass(frozen=True)

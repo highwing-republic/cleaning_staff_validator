@@ -12,11 +12,10 @@ import streamlit as st
 from src.constants import SKILL_LEVELS
 from src.database import get_connection, initialize_database
 from src.models import ValidationError
+from src.period_utils import WEEKDAY_LABELS_JA
 
 # 元アプリ（STAFF_SHIFT_DB_PATH）と同じDBへ接続しないよう専用の変数名を使う
 DB_PATH_ENV = "CLEANING_STAFF_VALIDATOR_DB_PATH"
-
-WEEKDAY_LABELS_JA = ("月", "火", "水", "木", "金", "土", "日")
 
 
 def format_skill_level(level: int) -> str:

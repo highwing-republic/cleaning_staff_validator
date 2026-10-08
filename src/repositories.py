@@ -487,15 +487,23 @@ def _now() -> str:
 _UPSERT_DAILY_REQUIREMENT_SQL = """
     INSERT INTO daily_requirements (
         work_date, occupancy_rate, required_total_staff, max_total_staff, note,
-        required_skill_level, required_skill_count
-    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        required_skill_level, required_skill_count, reserved_rooms
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT (work_date) DO UPDATE SET
         occupancy_rate = excluded.occupancy_rate,
         required_total_staff = excluded.required_total_staff,
         max_total_staff = excluded.max_total_staff,
         note = excluded.note,
         required_skill_level = excluded.required_skill_level,
-        required_skill_count = excluded.required_skill_count
+        required_skill_count = excluded.required_skill_count,
+        reserved_rooms = excluded.reserved_rooms
+"""
+
+_UPSERT_ROLE_REQUIREMENT_SQL = """
+    INSERT INTO daily_role_requirements (work_date, role_id, required_count)
+    VALUES (?, ?, ?)
+    ON CONFLICT (work_date, role_id) DO UPDATE SET
+        required_count = excluded.required_count
 """
 
 
@@ -508,31 +516,66 @@ def _daily_requirement_params(req: DailyRequirementInput) -> tuple:
         req.note,
         req.required_skill_level,
         req.required_skill_count,
+        req.reserved_rooms,
     )
+
+
+def _row_to_daily_requirement(row: sqlite3.Row) -> DailyRequirementInput:
+    return DailyRequirementInput(
+        work_date=row["work_date"],
+        required_total_staff=row["required_total_staff"],
+        max_total_staff=row["max_total_staff"],
+        occupancy_rate=row["occupancy_rate"],
+        note=row["note"],
+        required_skill_level=row["required_skill_level"],
+        required_skill_count=row["required_skill_count"],
+        reserved_rooms=row["reserved_rooms"],
+    )
+
+
+def get_daily_requirement(
+    conn: sqlite3.Connection, work_date: str
+) -> DailyRequirementInput | None:
+    """1日分の必要条件. 行がなければNone（= その日は要件未設定）."""
+    row = conn.execute(
+        "SELECT * FROM daily_requirements WHERE work_date = ?", (work_date,)
+    ).fetchone()
+    return None if row is None else _row_to_daily_requirement(row)
+
+
+def list_daily_requirements(
+    conn: sqlite3.Connection, start_date: str, end_date: str
+) -> list[DailyRequirementInput]:
+    """期間内の必要条件を日付昇順で返す（存在する行のみ）."""
+    rows = conn.execute(
+        "SELECT * FROM daily_requirements WHERE work_date BETWEEN ? AND ? "
+        "ORDER BY work_date",
+        (start_date, end_date),
+    ).fetchall()
+    return [_row_to_daily_requirement(row) for row in rows]
+
+
+def list_role_requirements(
+    conn: sqlite3.Connection, start_date: str, end_date: str
+) -> list[RoleRequirementInput]:
+    """期間内のロール別必要人数を日付・role_id昇順で返す."""
+    rows = conn.execute(
+        "SELECT work_date, role_id, required_count FROM daily_role_requirements "
+        "WHERE work_date BETWEEN ? AND ? ORDER BY work_date, role_id",
+        (start_date, end_date),
+    ).fetchall()
+    return [
+        RoleRequirementInput(row["work_date"], row["role_id"], row["required_count"])
+        for row in rows
+    ]
 
 
 def get_daily_requirements(
     conn: sqlite3.Connection, year_month: str
 ) -> list[DailyRequirementInput]:
+    """対象月の必要条件（既存の月単位API. 日付範囲版へ委譲する）."""
     dates = get_month_dates(year_month)
-    first, last = dates[0], dates[-1]
-    rows = conn.execute(
-        "SELECT * FROM daily_requirements WHERE work_date BETWEEN ? AND ? "
-        "ORDER BY work_date",
-        (first, last),
-    ).fetchall()
-    return [
-        DailyRequirementInput(
-            work_date=row["work_date"],
-            required_total_staff=row["required_total_staff"],
-            max_total_staff=row["max_total_staff"],
-            occupancy_rate=row["occupancy_rate"],
-            note=row["note"],
-            required_skill_level=row["required_skill_level"],
-            required_skill_count=row["required_skill_count"],
-        )
-        for row in rows
-    ]
+    return list_daily_requirements(conn, dates[0], dates[-1])
 
 
 def save_daily_requirement(conn: sqlite3.Connection, req: DailyRequirementInput) -> None:
@@ -549,29 +592,74 @@ def save_daily_requirements(
             conn.execute(_UPSERT_DAILY_REQUIREMENT_SQL, _daily_requirement_params(req))
 
 
+def delete_daily_requirement(conn: sqlite3.Connection, work_date: str) -> None:
+    """その日を要件未設定に戻す. ロール別必要人数も同時に削除する（孤児行を残さない）."""
+    with conn:
+        _delete_requirement_rows(conn, work_date)
+
+
+def _delete_requirement_rows(conn: sqlite3.Connection, work_date: str) -> None:
+    """呼び出し側のトランザクション内で使う. daily_role_requirements を先に削除する."""
+    conn.execute("DELETE FROM daily_role_requirements WHERE work_date = ?", (work_date,))
+    conn.execute("DELETE FROM daily_requirements WHERE work_date = ?", (work_date,))
+
+
+def save_period_requirements(
+    conn: sqlite3.Connection,
+    work_dates: list[str],
+    requirements: list[DailyRequirementInput],
+    role_requirements: list[RoleRequirementInput],
+) -> None:
+    """対象期間の予約・必要人数を1トランザクションで保存する.
+
+    work_dates のうち requirements に含まれない日は「要件未設定」として
+    daily_requirements と daily_role_requirements の行を削除する。
+    期間外の日付のデータは一切変更しない。
+    途中で失敗した場合は一部の日だけ保存された状態にならない。
+    """
+    target_dates = set(work_dates)
+    for req in requirements:
+        if req.work_date not in target_dates:
+            raise ValueError(f"requirement work_date {req.work_date!r} is out of period")
+    for role_req in role_requirements:
+        if role_req.work_date not in target_dates:
+            raise ValueError(
+                f"role requirement work_date {role_req.work_date!r} is out of period"
+            )
+
+    keep = {req.work_date: req for req in requirements}
+    roles_by_date: dict[str, list[RoleRequirementInput]] = {}
+    for role_req in role_requirements:
+        roles_by_date.setdefault(role_req.work_date, []).append(role_req)
+
+    with conn:
+        for work_date in work_dates:
+            req = keep.get(work_date)
+            if req is None:
+                _delete_requirement_rows(conn, work_date)
+                continue
+            conn.execute(_UPSERT_DAILY_REQUIREMENT_SQL, _daily_requirement_params(req))
+            # ロール条件は日単位で全置換する（画面から外したロールを残さない）
+            conn.execute(
+                "DELETE FROM daily_role_requirements WHERE work_date = ?", (work_date,)
+            )
+            for role_req in roles_by_date.get(work_date, []):
+                conn.execute(
+                    _UPSERT_ROLE_REQUIREMENT_SQL,
+                    (role_req.work_date, role_req.role_id, role_req.required_count),
+                )
+
+
 def get_role_requirements(conn: sqlite3.Connection, year_month: str) -> list[RoleRequirementInput]:
+    """対象月のロール別必要人数（既存の月単位API. 日付範囲版へ委譲する）."""
     dates = get_month_dates(year_month)
-    first, last = dates[0], dates[-1]
-    rows = conn.execute(
-        "SELECT work_date, role_id, required_count FROM daily_role_requirements "
-        "WHERE work_date BETWEEN ? AND ? ORDER BY work_date, role_id",
-        (first, last),
-    ).fetchall()
-    return [
-        RoleRequirementInput(row["work_date"], row["role_id"], row["required_count"])
-        for row in rows
-    ]
+    return list_role_requirements(conn, dates[0], dates[-1])
 
 
 def save_role_requirement(conn: sqlite3.Connection, req: RoleRequirementInput) -> None:
     with conn:
         conn.execute(
-            """
-            INSERT INTO daily_role_requirements (work_date, role_id, required_count)
-            VALUES (?, ?, ?)
-            ON CONFLICT (work_date, role_id) DO UPDATE SET
-                required_count = excluded.required_count
-            """,
+            _UPSERT_ROLE_REQUIREMENT_SQL,
             (req.work_date, req.role_id, req.required_count),
         )
 
@@ -580,12 +668,7 @@ def save_role_requirements(conn: sqlite3.Connection, reqs: list[RoleRequirementI
     with conn:
         for req in reqs:
             conn.execute(
-                """
-                INSERT INTO daily_role_requirements (work_date, role_id, required_count)
-                VALUES (?, ?, ?)
-                ON CONFLICT (work_date, role_id) DO UPDATE SET
-                    required_count = excluded.required_count
-                """,
+                _UPSERT_ROLE_REQUIREMENT_SQL,
                 (req.work_date, req.role_id, req.required_count),
             )
 

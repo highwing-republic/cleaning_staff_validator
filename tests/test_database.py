@@ -122,6 +122,8 @@ def test_employee_code_is_text(conn):
 
 
 def test_daily_requirements_columns(conn):
+    # reserved_rooms はPhase 7で追加した予約室数。
+    # 既存DBへはALTER TABLEで末尾に追加されるため、新規作成でも同じ順序になるようにしている
     assert _columns(conn, "daily_requirements") == [
         "work_date",
         "occupancy_rate",
@@ -130,6 +132,7 @@ def test_daily_requirements_columns(conn):
         "note",
         "required_skill_level",
         "required_skill_count",
+        "reserved_rooms",
     ]
 
 

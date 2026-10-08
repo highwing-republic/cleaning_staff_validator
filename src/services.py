@@ -14,8 +14,11 @@ from src.models import (
     AttendanceParseResult,
     AttendancePreview,
     AttendanceShiftInput,
+    DailyRequirementInput,
+    DailyRequirementView,
     ImportIssue,
     MonthlyValidationResult,
+    RoleRequirementInput,
     SpecialSkill,
     StaffDatePreferenceInput,
     StaffDayCondition,
@@ -27,6 +30,7 @@ from src.staffing_validation import validate_month_staffing
 from src.validation import (
     PREFERENCE_STAFF_NOT_FOUND,
     STAFF_SPECIAL_SKILL_NOT_FOUND,
+    validate_period_requirements,
     validate_staff,
     validate_staff_period_preferences,
 )
@@ -360,5 +364,61 @@ def save_period_preferences(
     if errors:
         return errors
     repo.save_staff_period_preferences(conn, staff_id, work_dates, preferences)
+    return []
+
+
+# ---------------------------------------------------------------------------
+# 予約・必要人数（Phase 7）
+# ---------------------------------------------------------------------------
+
+
+def get_period_requirements(
+    conn: sqlite3.Connection, work_dates: list[str]
+) -> list[DailyRequirementView]:
+    """対象期間の各日の要件を返す（行がない日は requirement=None = 要件未設定）.
+
+    期間分をまとめて取得する（1日ずつ問い合わせない）。
+    """
+    if not work_dates:
+        return []
+
+    first, last = work_dates[0], work_dates[-1]
+    requirements = {
+        req.work_date: req for req in repo.list_daily_requirements(conn, first, last)
+    }
+    role_counts: dict[str, dict[int, int]] = {}
+    for role_req in repo.list_role_requirements(conn, first, last):
+        role_counts.setdefault(role_req.work_date, {})[role_req.role_id] = (
+            role_req.required_count
+        )
+
+    return [
+        DailyRequirementView(
+            work_date=work_date,
+            requirement=requirements.get(work_date),
+            role_counts=role_counts.get(work_date, {}),
+        )
+        for work_date in work_dates
+    ]
+
+
+def save_period_requirements(
+    conn: sqlite3.Connection,
+    work_dates: list[str],
+    requirements: list[DailyRequirementInput],
+    role_requirements: list[RoleRequirementInput],
+) -> list[ValidationError]:
+    """検証に通った場合のみ、対象期間の予約・必要人数を1トランザクションで保存する.
+
+    エラーがあれば何も保存せずエラー一覧を返す（空リスト = 保存成功）。
+    requirements に含まれない日は要件未設定として行を削除する。
+    """
+    role_ids = {role["role_id"] for role in repo.list_roles(conn)}
+    errors = validate_period_requirements(
+        work_dates, requirements, role_requirements, role_ids
+    )
+    if errors:
+        return errors
+    repo.save_period_requirements(conn, work_dates, requirements, role_requirements)
     return []
 

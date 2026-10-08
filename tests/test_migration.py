@@ -11,10 +11,12 @@ import pytest
 
 from src import repositories as repo
 from src.database import (
+    DAILY_REQUIREMENT_ADDED_COLUMNS,
     STAFF_ADDED_COLUMNS,
     get_connection,
     initialize_database,
 )
+from src.models import DailyRequirementInput
 
 # Phase 1〜4 時点の staff / daily_requirements（通常勤務条件の列がない）
 LEGACY_SCHEMA = """
@@ -181,3 +183,68 @@ def test_migrated_db_accepts_phase5_updates(migrated):
     assert detail.staff.max_consecutive_days == 5
     assert detail.weekdays == (0, 1, 3, 4, 5)
     assert detail.special_skill_ids == (skill_id,)
+
+
+# ---------------------------------------------------------------------------
+# daily_requirements（Phase 7: reserved_rooms）
+# ---------------------------------------------------------------------------
+
+
+def test_reserved_rooms_column_is_added(migrated):
+    columns = _columns(migrated, "daily_requirements")
+    assert {name for name, _ in DAILY_REQUIREMENT_ADDED_COLUMNS} <= set(columns)
+
+
+def test_existing_requirements_keep_their_values(migrated):
+    row = migrated.execute(
+        "SELECT work_date, required_total_staff FROM daily_requirements"
+    ).fetchone()
+    assert tuple(row) == ("2026-10-01", 5)
+
+
+def test_reserved_rooms_is_null_for_existing_rows(migrated):
+    """予約室数を0で埋めない（「予約0室」と「未入力」の区別がつかなくなるため）."""
+    rooms = migrated.execute("SELECT reserved_rooms FROM daily_requirements").fetchone()[0]
+    assert rooms is None
+
+
+def test_migrated_requirement_columns_match_fresh_database(migrated):
+    fresh = get_connection(":memory:")
+    initialize_database(fresh)
+    assert _columns(migrated, "daily_requirements") == _columns(fresh, "daily_requirements")
+    fresh.close()
+
+
+def test_requirement_migration_is_idempotent(migrated):
+    before = _columns(migrated, "daily_requirements")
+    for _ in range(3):
+        initialize_database(migrated)
+    assert _columns(migrated, "daily_requirements") == before
+    assert migrated.execute("SELECT COUNT(*) FROM daily_requirements").fetchone()[0] == 1
+
+
+@pytest.mark.parametrize("value", [None, 0, 10])
+def test_migrated_db_accepts_valid_reserved_rooms(migrated, value):
+    with migrated:
+        migrated.execute("UPDATE daily_requirements SET reserved_rooms = ?", (value,))
+    assert migrated.execute("SELECT reserved_rooms FROM daily_requirements").fetchone()[0] == value
+
+
+@pytest.mark.parametrize("value", [-1, -10])
+def test_migrated_db_enforces_reserved_rooms_constraint(migrated, value):
+    """ALTER TABLE で移行したDBでも新規作成DBと同じ制約が効くこと."""
+    with pytest.raises(sqlite3.IntegrityError):
+        with migrated:
+            migrated.execute("UPDATE daily_requirements SET reserved_rooms = ?", (value,))
+
+
+def test_migrated_db_accepts_phase7_requirement_save(migrated):
+    repo.save_daily_requirement(
+        migrated,
+        DailyRequirementInput(
+            work_date="2026-10-20", required_total_staff=4, reserved_rooms=8
+        ),
+    )
+    saved = repo.get_daily_requirement(migrated, "2026-10-20")
+    assert (saved.required_total_staff, saved.reserved_rooms) == (4, 8)
+

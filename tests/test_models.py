@@ -123,3 +123,31 @@ def test_generation_models_removed():
         "PrecheckResult",
     ):
         assert not hasattr(models, name), name
+
+
+def test_daily_requirement_reserved_rooms_defaults_to_none():
+    d = DailyRequirementInput(work_date="2026-10-01", required_total_staff=8)
+    assert d.reserved_rooms is None
+
+
+def test_daily_requirement_reserved_rooms_zero_is_kept():
+    """0（予約室数0）と None（未入力）を取り違えないこと."""
+    d = DailyRequirementInput(
+        work_date="2026-10-01", required_total_staff=8, reserved_rooms=0
+    )
+    assert d.reserved_rooms == 0
+    assert d.reserved_rooms is not None
+
+
+def test_daily_requirement_view_is_defined():
+    from src.models import DailyRequirementView
+
+    undefined = DailyRequirementView(work_date="2026-10-01")
+    defined = DailyRequirementView(
+        work_date="2026-10-01",
+        requirement=DailyRequirementInput(work_date="2026-10-01", required_total_staff=0),
+    )
+    assert undefined.is_defined is False
+    assert undefined.role_counts == {}
+    assert defined.is_defined is True
+

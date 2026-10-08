@@ -65,6 +65,10 @@ REQUIREMENT_ROLE_SUM_EXCEEDS_MAX = "REQUIREMENT_ROLE_SUM_EXCEEDS_MAX"
 REQUIREMENT_SKILL_LEVEL_INVALID = "REQUIREMENT_SKILL_LEVEL_INVALID"
 REQUIREMENT_SKILL_COUNT_INVALID = "REQUIREMENT_SKILL_COUNT_INVALID"
 REQUIREMENT_SKILL_LEVEL_REQUIRED = "REQUIREMENT_SKILL_LEVEL_REQUIRED"
+REQUIREMENT_RESERVED_ROOMS_INVALID = "REQUIREMENT_RESERVED_ROOMS_INVALID"
+REQUIREMENT_DATE_OUT_OF_PERIOD = "REQUIREMENT_DATE_OUT_OF_PERIOD"
+REQUIREMENT_DUPLICATED_DATE = "REQUIREMENT_DUPLICATED_DATE"
+REQUIREMENT_ROLE_NOT_FOUND = "REQUIREMENT_ROLE_NOT_FOUND"
 
 
 def _is_valid_int(value: object) -> bool:
@@ -408,6 +412,20 @@ def validate_daily_requirement(
                 )
             )
 
+    reserved_rooms = req.reserved_rooms
+    # NULL=未入力/未確認, 0=予約室数0 を区別するため、0は有効値として通す
+    if reserved_rooms is not None and (
+        not _is_valid_int(reserved_rooms) or reserved_rooms < 0
+    ):
+        errors.append(
+            ValidationError(
+                code=REQUIREMENT_RESERVED_ROOMS_INVALID,
+                message="予約室数は0以上の整数で入力してください。",
+                work_date=work_date,
+                field_name="reserved_rooms",
+            )
+        )
+
     errors += _validate_skill_requirement(req)
     return errors
 
@@ -638,6 +656,73 @@ def validate_staff_period_preferences(
             )
 
         errors += validate_staff_date_preference(pref, staff)
+
+    return errors
+
+
+def validate_period_requirements(
+    work_dates: list[str],
+    requirements: list[DailyRequirementInput],
+    role_requirements: list[RoleRequirementInput],
+    role_ids: set[int] | None = None,
+) -> list[ValidationError]:
+    """期間分の日別必要条件をまとめて検証する（日付の重複・期間外も見る）.
+
+    予約室数と必要人数の整合性は検証しない（アプリは必要人数を推定せず、
+    「予約20室・必要1名」も現場の判断として受け入れる）。
+    """
+    errors: list[ValidationError] = []
+    target_dates = set(work_dates)
+    seen: set[str] = set()
+
+    role_by_date: dict[str, list[RoleRequirementInput]] = {}
+    for role_req in role_requirements:
+        role_by_date.setdefault(role_req.work_date, []).append(role_req)
+
+        if role_req.work_date not in target_dates:
+            errors.append(
+                ValidationError(
+                    code=REQUIREMENT_DATE_OUT_OF_PERIOD,
+                    message="対象期間外の日付が含まれています。",
+                    work_date=role_req.work_date,
+                    role_id=role_req.role_id,
+                    field_name="work_date",
+                )
+            )
+        if role_ids is not None and role_req.role_id not in role_ids:
+            errors.append(
+                ValidationError(
+                    code=REQUIREMENT_ROLE_NOT_FOUND,
+                    message="登録されていないロールが指定されています。",
+                    work_date=role_req.work_date,
+                    role_id=role_req.role_id,
+                    field_name="role_id",
+                )
+            )
+
+    for req in requirements:
+        if req.work_date in seen:
+            errors.append(
+                ValidationError(
+                    code=REQUIREMENT_DUPLICATED_DATE,
+                    message="同じ日付の要件が重複しています。",
+                    work_date=req.work_date,
+                    field_name="work_date",
+                )
+            )
+        seen.add(req.work_date)
+
+        if req.work_date not in target_dates:
+            errors.append(
+                ValidationError(
+                    code=REQUIREMENT_DATE_OUT_OF_PERIOD,
+                    message="対象期間外の日付が含まれています。",
+                    work_date=req.work_date,
+                    field_name="work_date",
+                )
+            )
+
+        errors += validate_daily_requirement(req, role_by_date.get(req.work_date, []))
 
     return errors
 

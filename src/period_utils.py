@@ -18,6 +18,9 @@ PERIOD_DEFAULT_DAYS = 14
 PERIOD_DAY_OPTIONS: tuple[int, ...] = (10, 11, 12, 13, 14)
 
 
+WEEKDAY_LABELS_JA: tuple[str, ...] = ("月", "火", "水", "木", "金", "土", "日")
+
+
 def parse_date(work_date: object) -> date | None:
     """'YYYY-MM-DD' を date にする. 形式・値が不正ならNone（例外は投げない）."""
     if isinstance(work_date, date):
@@ -67,3 +70,15 @@ def format_period(start_date: str, days: int) -> str:
     """'2026-10-20 ～ 2026-11-02（14日間）' のような表示文字列."""
     dates = period_dates(start_date, days)
     return f"{dates[0]} ～ {dates[-1]}（{days}日間）"
+
+
+def format_date_short(work_date: str) -> str:
+    """'2026-10-25' を '10/25(日)' にする（期間グリッドの見出し用）.
+
+    不正な日付は入力値をそのまま返す（画面を落とさない）。
+    """
+    day = parse_date(work_date)
+    if day is None:
+        return str(work_date)
+    return f"{day.month}/{day.day}({WEEKDAY_LABELS_JA[day.weekday()]})"
+

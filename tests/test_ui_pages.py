@@ -428,24 +428,311 @@ def test_staff_page_edit_form_prefills_existing_conditions(db_path):
 
 
 # ---------------------------------------------------------------------------
-# 03 日別必要条件
+# 03 予約・必要人数（Phase 7）
 # ---------------------------------------------------------------------------
 
+REQUIREMENT_PAGE = "pages/03_requirements.py"
+REQUIREMENT_SAVE_BUTTON = "この期間の予約・必要人数を保存"
 
-def test_requirements_page_saves_skill_columns(db_path):
-    at = AppTest.from_file(_page("pages/03_requirements.py"), default_timeout=30)
+
+def _open_requirement_page():
+    at = AppTest.from_file(_page(REQUIREMENT_PAGE), default_timeout=120)
     at.run()
     assert not at.exception
-    [b for b in at.button if b.label == "保存"][0].click()
+    return at
+
+
+def _requirement_dates(at):
+    from src.period_utils import period_dates
+
+    start = at.session_state["requirement_period_start"]
+    days = at.session_state["requirement_period_days"]
+    return period_dates(start.isoformat(), int(days))
+
+
+def _save_requirements(at):
+    [b for b in at.button if b.label == REQUIREMENT_SAVE_BUTTON][0].click()
     at.run()
     assert not at.exception
+    return at
+
+
+def _saved_requirement(db_path, work_date):
+    conn = get_connection(str(db_path))
+    req = repo.get_daily_requirement(conn, work_date)
+    conn.close()
+    return req
+
+
+def test_requirements_page_opens(db_path):
+    at = _open_requirement_page()
+    assert any("予約" in str(t.value) for t in at.title)
+
+
+def test_requirements_page_offers_period_selection(db_path):
+    at = _open_requirement_page()
+    assert [d.label for d in at.date_input] == ["開始日"]
+    assert any(s.label == "期間" for s in at.selectbox)
+
+
+def test_requirements_period_can_be_shortened(db_path):
+    at = _open_requirement_page()
+    at.selectbox(key="requirement_period_days").select(10)
+    at.run()
+    assert not at.exception
+    assert len(_requirement_dates(at)) == 10
+
+
+def test_requirements_period_never_exceeds_fourteen_days(db_path):
+    from src.period_utils import PERIOD_MAX_DAYS
+
+    at = _open_requirement_page()
+    options = at.selectbox(key="requirement_period_days").options
+    day_counts = [int(str(o).replace("日間", "")) for o in options]
+    assert max(day_counts) == PERIOD_MAX_DAYS
+    assert len(_requirement_dates(at)) <= PERIOD_MAX_DAYS
+
+
+def test_requirements_period_can_cross_month_boundary(db_path):
+    """月をまたぐ期間を扱えること."""
+    import datetime
+
+    at = _open_requirement_page()
+    at.date_input(key="requirement_period_start").set_value(datetime.date(2026, 10, 28))
+    at.run()
+    assert not at.exception
+    dates = _requirement_dates(at)
+    assert dates[0] == "2026-10-28"
+    assert any(d.startswith("2026-11") for d in dates)
+
+
+def test_requirements_page_edits_whole_period_without_navigation(db_path):
+    at = _open_requirement_page()
+    for work_date in _requirement_dates(at):
+        assert at.checkbox(key=f"req_{work_date}_defined") is not None
+        assert at.number_input(key=f"req_{work_date}_reserved") is not None
+        assert at.number_input(key=f"req_{work_date}_required") is not None
+
+
+def test_requirements_unset_days_create_no_rows(db_path):
+    """設定をONにしない日は要件未設定のまま（行を作らない）."""
+    at = _open_requirement_page()
+    dates = _requirement_dates(at)
+    _save_requirements(at)
 
     conn = get_connection(str(db_path))
-    ym = at.session_state["year_month"]
-    reqs = repo.get_daily_requirements(conn, ym)
+    assert repo.list_daily_requirements(conn, dates[0], dates[-1]) == []
     conn.close()
-    assert len(reqs) == len(get_month_dates(ym))
-    assert all((r.required_skill_level, r.required_skill_count) == (None, 0) for r in reqs)
+
+
+def test_requirements_saves_reserved_rooms_and_required_staff(db_path):
+    at = _open_requirement_page()
+    target = _requirement_dates(at)[0]
+    at.checkbox(key=f"req_{target}_defined").check()
+    at.number_input(key=f"req_{target}_reserved").set_value(8)
+    at.number_input(key=f"req_{target}_required").set_value(4)
+    _save_requirements(at)
+
+    req = _saved_requirement(db_path, target)
+    assert req is not None
+    assert req.reserved_rooms == 8
+    assert req.required_total_staff == 4
+
+
+def test_requirements_saves_role_conditions(db_path):
+    at = _open_requirement_page()
+    target = _requirement_dates(at)[1]
+    at.checkbox(key=f"req_{target}_defined").check()
+    at.number_input(key=f"req_{target}_required").set_value(5)
+    at.number_input(key=f"req_{target}_role_{LEADER}").set_value(1)
+    at.number_input(key=f"req_{target}_role_{CHECKER}").set_value(2)
+    _save_requirements(at)
+
+    conn = get_connection(str(db_path))
+    counts = {
+        r.role_id: r.required_count
+        for r in repo.list_role_requirements(conn, target, target)
+    }
+    conn.close()
+    assert counts[LEADER] == 1
+    assert counts[CHECKER] == 2
+
+
+def test_requirements_saves_skill_condition(db_path):
+    at = _open_requirement_page()
+    target = _requirement_dates(at)[2]
+    at.checkbox(key=f"req_{target}_defined").check()
+    at.number_input(key=f"req_{target}_required").set_value(5)
+    at.number_input(key=f"req_{target}_skill_level").set_value(4)
+    at.number_input(key=f"req_{target}_skill_count").set_value(2)
+    _save_requirements(at)
+
+    req = _saved_requirement(db_path, target)
+    assert (req.required_skill_level, req.required_skill_count) == (4, 2)
+
+
+def test_requirements_saves_without_skill_condition(db_path):
+    at = _open_requirement_page()
+    target = _requirement_dates(at)[3]
+    at.checkbox(key=f"req_{target}_defined").check()
+    at.number_input(key=f"req_{target}_required").set_value(3)
+    _save_requirements(at)
+
+    req = _saved_requirement(db_path, target)
+    assert (req.required_skill_level, req.required_skill_count) == (None, 0)
+
+
+def test_requirements_saves_max_total_staff(db_path):
+    at = _open_requirement_page()
+    target = _requirement_dates(at)[4]
+    at.checkbox(key=f"req_{target}_defined").check()
+    at.number_input(key=f"req_{target}_required").set_value(3)
+    at.number_input(key=f"req_{target}_max").set_value(6)
+    _save_requirements(at)
+
+    assert _saved_requirement(db_path, target).max_total_staff == 6
+
+
+def test_requirements_required_zero_is_a_defined_requirement(db_path):
+    """required_total_staff=0 は「設定済み・必要人数0」であり要件未設定ではない."""
+    at = _open_requirement_page()
+    target = _requirement_dates(at)[5]
+    at.checkbox(key=f"req_{target}_defined").check()
+    at.number_input(key=f"req_{target}_required").set_value(0)
+    _save_requirements(at)
+
+    req = _saved_requirement(db_path, target)
+    assert req is not None
+    assert req.required_total_staff == 0
+
+
+def test_requirements_reserved_rooms_zero_differs_from_blank(db_path):
+    """予約0室と未入力を区別して保存できること."""
+    at = _open_requirement_page()
+    dates = _requirement_dates(at)
+    zero_day, blank_day = dates[6], dates[7]
+    for work_date in (zero_day, blank_day):
+        at.checkbox(key=f"req_{work_date}_defined").check()
+        at.number_input(key=f"req_{work_date}_required").set_value(3)
+    at.number_input(key=f"req_{zero_day}_reserved").set_value(0)
+    _save_requirements(at)
+
+    assert _saved_requirement(db_path, zero_day).reserved_rooms == 0
+    assert _saved_requirement(db_path, blank_day).reserved_rooms is None
+
+
+def test_requirements_turning_off_removes_requirement_and_roles(db_path):
+    """設定OFFにした日は要件行もロール行も削除される."""
+    at = _open_requirement_page()
+    target = _requirement_dates(at)[0]
+    at.checkbox(key=f"req_{target}_defined").check()
+    at.number_input(key=f"req_{target}_required").set_value(4)
+    at.number_input(key=f"req_{target}_role_{LEADER}").set_value(1)
+    _save_requirements(at)
+    assert _saved_requirement(db_path, target) is not None
+
+    at.checkbox(key=f"req_{target}_defined").uncheck()
+    _save_requirements(at)
+
+    conn = get_connection(str(db_path))
+    assert repo.get_daily_requirement(conn, target) is None
+    assert repo.list_role_requirements(conn, target, target) == []
+    conn.close()
+
+
+def test_requirements_saves_whole_period_at_once(db_path):
+    at = _open_requirement_page()
+    dates = _requirement_dates(at)
+    for index, work_date in enumerate(dates[:5]):
+        at.checkbox(key=f"req_{work_date}_defined").check()
+        at.number_input(key=f"req_{work_date}_reserved").set_value(index + 1)
+        at.number_input(key=f"req_{work_date}_required").set_value(index)
+    _save_requirements(at)
+
+    conn = get_connection(str(db_path))
+    saved = repo.list_daily_requirements(conn, dates[0], dates[-1])
+    conn.close()
+    assert [r.work_date for r in saved] == dates[:5]
+    assert [r.reserved_rooms for r in saved] == [1, 2, 3, 4, 5]
+
+
+def test_requirements_summary_counts_defined_and_undefined(db_path):
+    at = _open_requirement_page()
+    target = _requirement_dates(at)[0]
+    at.checkbox(key=f"req_{target}_defined").check()
+    at.number_input(key=f"req_{target}_reserved").set_value(8)
+    at.number_input(key=f"req_{target}_required").set_value(4)
+    _save_requirements(at)
+
+    metrics = {m.label: m.value for m in at.metric}
+    assert metrics["設定済み日数"] == "1 / 14"
+    assert metrics["未設定日数"] == "13"
+    assert metrics["予約室数合計"] == "8室"
+
+
+def test_requirements_overview_distinguishes_undefined_days(db_path):
+    at = _open_requirement_page()
+    target = _requirement_dates(at)[0]
+    at.checkbox(key=f"req_{target}_defined").check()
+    at.number_input(key=f"req_{target}_required").set_value(0)
+    _save_requirements(at)
+
+    table = at.dataframe[0].value
+    assert list(table["必要人数"])[0] == "0名"
+    assert list(table["必要人数"])[1] == "要件未設定"
+
+
+def test_requirements_shows_success_message_after_save(db_path):
+    at = _open_requirement_page()
+    _save_requirements(at)
+    assert any("保存しました" in s.value for s in at.success)
+
+
+def test_requirements_rejects_required_over_max(db_path):
+    at = _open_requirement_page()
+    target = _requirement_dates(at)[0]
+    at.checkbox(key=f"req_{target}_defined").check()
+    at.number_input(key=f"req_{target}_required").set_value(8)
+    at.number_input(key=f"req_{target}_max").set_value(3)
+    _save_requirements(at)
+
+    assert at.error
+    assert _saved_requirement(db_path, target) is None
+
+
+def test_requirements_rejects_skill_count_without_level(db_path):
+    at = _open_requirement_page()
+    target = _requirement_dates(at)[0]
+    at.checkbox(key=f"req_{target}_defined").check()
+    at.number_input(key=f"req_{target}_required").set_value(3)
+    at.number_input(key=f"req_{target}_skill_count").set_value(2)
+    _save_requirements(at)
+
+    assert at.error
+    assert _saved_requirement(db_path, target) is None
+
+
+def test_requirements_does_not_change_data_outside_period(db_path):
+    conn = get_connection(str(db_path))
+    repo.save_daily_requirement(
+        conn, DailyRequirementInput(work_date="2026-01-15", required_total_staff=9)
+    )
+    conn.close()
+
+    at = _open_requirement_page()
+    target = _requirement_dates(at)[0]
+    at.checkbox(key=f"req_{target}_defined").check()
+    at.number_input(key=f"req_{target}_required").set_value(4)
+    _save_requirements(at)
+
+    assert _saved_requirement(db_path, "2026-01-15").required_total_staff == 9
+
+
+def test_requirements_csv_import_section_remains(db_path):
+    """既存の月単位CSV取り込みを壊さないこと."""
+    at = _open_requirement_page()
+    assert at.file_uploader
+    assert any(s.label == "対象年月" for s in at.selectbox)
 
 
 # ---------------------------------------------------------------------------
