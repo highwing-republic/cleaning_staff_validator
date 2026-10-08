@@ -6,6 +6,7 @@ from src.constants import (
     IMPORT_STATUSES,
     SHIFT_TYPES,
     SKILL_LEVEL_DEFAULT,
+    TIME_STATUSES,
     VALIDATION_STATUSES,
 )
 
@@ -69,6 +70,70 @@ class StaffDetail:
     staff: StaffInput
     weekdays: tuple[int, ...] = ()
     special_skill_ids: tuple[int, ...] = ()
+
+
+@dataclass(frozen=True)
+class StaffDatePreferenceInput:
+    """ある1日の勤務希望（「今回だけ何が違うか」）. 1スタッフ1日につき1件.
+
+    通常どおりの日はこの型のインスタンスを作らない（行がない = 通常条件を使う）。
+    override_* は「その日に出勤するなら何時か」であり、出勤を強制しない。
+    note は若女将の確認用で、Solverの条件には使わない（note だけの登録も可）。
+    """
+
+    staff_id: int
+    work_date: str
+    absolute_off: bool = False
+    prefer_off: bool = False
+    available_extra: bool = False
+    override_start_time: str | None = None
+    override_end_time: str | None = None
+    note: str | None = None
+
+    @property
+    def is_empty(self) -> bool:
+        """すべて通常どおりか（Trueなら保存せず行を削除する）."""
+        return not (
+            self.absolute_off
+            or self.prefer_off
+            or self.available_extra
+            or self.override_start_time
+            or self.override_end_time
+            or (self.note or "").strip()
+        )
+
+
+@dataclass(frozen=True)
+class StaffDayCondition:
+    """通常条件と勤務希望を突き合わせた、ある1日の実効条件.
+
+    将来Solverがこの結果を使う（DB・画面に依存せず resolve_staff_day_condition で作る）。
+    - base_available: その日が通常勤務曜日か
+    - can_work: 実際に勤務可能か（ABSOLUTE_OFF が最優先で False）
+    - prefer_off: できれば休み（can_work は変えない）
+    - effective_*: その日に勤務する場合の時刻。確定できない場合はNone
+    - time_status: 実効時間の確定状況（TIME_STATUS_*）
+    """
+
+    staff_id: int
+    work_date: str
+    base_available: bool
+    can_work: bool
+    prefer_off: bool = False
+    available_extra: bool = False
+    absolute_off: bool = False
+    effective_start_time: str | None = None
+    effective_end_time: str | None = None
+    time_status: str = TIME_STATUSES[0]
+    # 通常勤務時刻ではなく勤務希望の時刻を採用したか（画面で変更点だけを示すために持つ）
+    start_overridden: bool = False
+    end_overridden: bool = False
+    note: str | None = None
+    has_preference: bool = False
+
+    def __post_init__(self) -> None:
+        if self.time_status not in TIME_STATUSES:
+            raise ValueError(f"invalid time_status: {self.time_status!r}")
 
 
 @dataclass(frozen=True)

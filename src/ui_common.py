@@ -44,6 +44,44 @@ def format_optional_int(value: int | None, suffix: str = "") -> str:
     return f"{value}{suffix}"
 
 
+def select_period(key_prefix: str = "preference_period") -> tuple[str, int]:
+    """対象期間セレクタ（開始日＋日数）. 戻り値は (開始日 'YYYY-MM-DD', 日数).
+
+    月をまたぐ期間を扱うため year_month ではなく開始日と日数で指定する。
+    既定の開始日は翌日（今日への依存は period_utils.default_period_start に閉じている）。
+    """
+    from datetime import date as _date
+
+    from src.period_utils import (
+        PERIOD_DAY_OPTIONS,
+        PERIOD_DEFAULT_DAYS,
+        default_period_start,
+        format_period,
+    )
+
+    start_key, days_key = f"{key_prefix}_start", f"{key_prefix}_days"
+    if start_key not in st.session_state:
+        st.session_state[start_key] = _date.fromisoformat(default_period_start())
+    if days_key not in st.session_state:
+        st.session_state[days_key] = PERIOD_DEFAULT_DAYS
+
+    left, right = st.columns(2)
+    with left:
+        start = st.date_input("開始日", key=start_key, format="YYYY-MM-DD")
+    with right:
+        days = st.selectbox(
+            "期間",
+            options=list(PERIOD_DAY_OPTIONS),
+            key=days_key,
+            format_func=lambda d: f"{d}日間",
+            help="現場は10〜14日先までを単位にシフトを組むため、最大14日としています。",
+        )
+
+    start_date = start.isoformat() if hasattr(start, "isoformat") else str(start)
+    st.caption(f"対象期間: {format_period(start_date, int(days))}")
+    return start_date, int(days)
+
+
 def open_connection() -> sqlite3.Connection:
     """このスクリプト実行用のDB接続を新規に作る.
 

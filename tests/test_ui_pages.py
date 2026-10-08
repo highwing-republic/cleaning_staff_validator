@@ -27,6 +27,7 @@ PAGES = [
     "pages/02_attendance_import.py",
     "pages/03_requirements.py",
     "pages/04_validation.py",
+    "pages/05_preferences.py",
 ]
 
 
@@ -445,6 +446,429 @@ def test_requirements_page_saves_skill_columns(db_path):
     conn.close()
     assert len(reqs) == len(get_month_dates(ym))
     assert all((r.required_skill_level, r.required_skill_count) == (None, 0) for r in reqs)
+
+
+# ---------------------------------------------------------------------------
+# 05 勤務希望入力（Phase 6）
+# ---------------------------------------------------------------------------
+
+PREFERENCE_PAGE = "pages/05_preferences.py"
+PREFERENCE_SAVE_BUTTON = "このスタッフの希望を保存"
+
+
+def _seed_preference_staff(db_path):
+    """通常勤務曜日・通常勤務時間を持つスタッフを登録する.
+
+    2名目は通常勤務時間が未設定（勤務条件が未確定のスタッフでも画面が壊れないこと用）。
+    """
+    conn = get_connection(str(db_path))
+    full = repo.create_staff(
+        conn, "0101", "常勤Aさん", CLEANER, 4, "清掃",
+        standard_start_time="09:00", standard_end_time="15:30",
+        weekdays=[0, 1, 2, 3, 4, 5, 6],
+    )
+    no_time = repo.create_staff(
+        conn, "0102", "時間未設定Bさん", CLEANER, 3, "清掃", weekdays=[0, 1, 2, 3, 4, 5, 6]
+    )
+    part = repo.create_staff(
+        conn, "0103", "短時間Cさん", CLEANER, 3, "清掃",
+        standard_start_time="09:00", standard_end_time="13:00",
+        weekdays=[0, 1, 3, 4],
+    )
+    conn.close()
+    return full, no_time, part
+
+
+def _open_preference_page():
+    at = AppTest.from_file(_page(PREFERENCE_PAGE), default_timeout=60)
+    at.run()
+    assert not at.exception
+    return at
+
+
+def _period_dates_of(at):
+    """画面が対象にしている期間の日付一覧（ウィジェットキー生成用）."""
+    from src.period_utils import period_dates
+
+    start = at.session_state["preference_period_start"]
+    days = at.session_state["preference_period_days"]
+    return period_dates(start.isoformat(), int(days))
+
+
+def _save_preferences(at):
+    [b for b in at.button if b.label == PREFERENCE_SAVE_BUTTON][0].click()
+    at.run()
+    assert not at.exception
+    return at
+
+
+def _saved(db_path, staff_id, work_date):
+    conn = get_connection(str(db_path))
+    pref = repo.get_staff_date_preference(conn, staff_id, work_date)
+    conn.close()
+    return pref
+
+
+def test_preference_page_runs_without_staff(db_path):
+    """スタッフ未登録でも画面が落ちないこと."""
+    at = AppTest.from_file(_page(PREFERENCE_PAGE), default_timeout=60)
+    at.run()
+    assert not at.exception
+    assert any("スタッフ" in i.value for i in at.info)
+
+
+def test_preference_page_offers_period_selection(db_path):
+    _seed_preference_staff(db_path)
+    at = _open_preference_page()
+    assert [d.label for d in at.date_input] == ["開始日"]
+    assert any(s.label == "期間" for s in at.selectbox)
+
+
+def test_preference_period_never_exceeds_fourteen_days(db_path):
+    """最大14日まで（選択肢にも14日を超えるものを出さない）."""
+    from src.period_utils import PERIOD_MAX_DAYS
+
+    _seed_preference_staff(db_path)
+    at = _open_preference_page()
+    # options は format_func 適用後（"10日間" など）なので数値部分だけを見る
+    options = at.selectbox(key="preference_period_days").options
+    day_counts = [int(str(o).replace("日間", "")) for o in options]
+    assert day_counts
+    assert max(day_counts) == PERIOD_MAX_DAYS
+    assert len(_period_dates_of(at)) <= PERIOD_MAX_DAYS
+
+
+def test_preference_period_can_be_shortened(db_path):
+    _seed_preference_staff(db_path)
+    at = _open_preference_page()
+    at.selectbox(key="preference_period_days").select(10)
+    at.run()
+    assert not at.exception
+    assert len(_period_dates_of(at)) == 10
+
+
+def test_preference_period_can_cross_month_boundary(db_path):
+    """月をまたぐ期間を扱えること."""
+    import datetime
+
+    _seed_preference_staff(db_path)
+    at = _open_preference_page()
+    at.date_input(key="preference_period_start").set_value(datetime.date(2026, 10, 28))
+    at.run()
+    assert not at.exception
+    dates = _period_dates_of(at)
+    assert dates[0] == "2026-10-28"
+    assert any(d.startswith("2026-11") for d in dates)
+
+
+def test_preference_page_lets_staff_be_selected(db_path):
+    full, no_time, part = _seed_preference_staff(db_path)
+    at = _open_preference_page()
+    selector = at.selectbox(key="preference_staff")
+    assert selector.value == full
+    at.selectbox(key="preference_staff").select(part)
+    at.run()
+    assert not at.exception
+    assert at.selectbox(key="preference_staff").value == part
+
+
+def test_preference_page_shows_staff_by_date_grid(db_path):
+    """スタッフ × 日付の一覧が出ること."""
+    _seed_preference_staff(db_path)
+    at = _open_preference_page()
+    table = at.dataframe[0].value
+    assert list(table["スタッフ"]) == ["常勤Aさん", "時間未設定Bさん", "短時間Cさん"]
+    assert len(table.columns) == len(_period_dates_of(at)) + 1
+
+
+def test_preference_grid_shows_normal_for_unchanged_days(db_path):
+    """変更なしの日は「未入力」ではなく「通常」と表示する."""
+    _seed_preference_staff(db_path)
+    at = _open_preference_page()
+    table = at.dataframe[0].value
+    row = table[table["スタッフ"] == "常勤Aさん"].iloc[0]
+    values = [row[c] for c in table.columns if c != "スタッフ"]
+    assert set(values) == {"通常"}
+    assert "未入力" not in values
+
+
+def test_preference_grid_shows_normal_off_weekdays(db_path):
+    """通常休み曜日が分かる表示になっていること."""
+    _seed_preference_staff(db_path)
+    at = _open_preference_page()
+    table = at.dataframe[0].value
+    row = table[table["スタッフ"] == "短時間Cさん"].iloc[0]
+    values = [row[c] for c in table.columns if c != "スタッフ"]
+    assert "通常休み" in values
+
+
+def test_preference_page_shows_standard_work_time(db_path):
+    """早上がり入力時に比較できるよう通常勤務時間を出すこと."""
+    _seed_preference_staff(db_path)
+    at = _open_preference_page()
+    assert any("09:00-15:30" in str(c.value) for c in at.caption)
+
+
+def test_preference_page_warns_when_standard_time_unset(db_path):
+    """通常勤務時間が未設定でも画面は壊さず、確定できないことを警告する."""
+    full, no_time, part = _seed_preference_staff(db_path)
+    at = _open_preference_page()
+    at.selectbox(key="preference_staff").select(no_time)
+    at.run()
+    assert not at.exception
+    assert any("通常勤務時間が未設定" in w.value for w in at.warning)
+
+
+def test_preference_page_edits_whole_period_without_navigation(db_path):
+    """1スタッフの期間分（14日）をページ遷移なしでまとめて編集できること."""
+    _seed_preference_staff(db_path)
+    at = _open_preference_page()
+    dates = _period_dates_of(at)
+    for work_date in dates:
+        assert at.checkbox(key=f"pref_{work_date}_absolute_off") is not None
+        assert at.text_input(key=f"pref_{work_date}_end") is not None
+
+
+def test_preference_saves_absolute_off(db_path):
+    full, _, _ = _seed_preference_staff(db_path)
+    at = _open_preference_page()
+    target = _period_dates_of(at)[2]
+    at.checkbox(key=f"pref_{target}_absolute_off").check()
+    _save_preferences(at)
+
+    pref = _saved(db_path, full, target)
+    assert pref is not None
+    assert pref.absolute_off is True
+    assert pref.prefer_off is False
+
+
+def test_preference_saves_prefer_off(db_path):
+    full, _, _ = _seed_preference_staff(db_path)
+    at = _open_preference_page()
+    target = _period_dates_of(at)[3]
+    at.checkbox(key=f"pref_{target}_prefer_off").check()
+    _save_preferences(at)
+
+    pref = _saved(db_path, full, target)
+    assert pref.prefer_off is True
+    assert pref.absolute_off is False
+
+
+def test_preference_saves_early_leave(db_path):
+    full, _, _ = _seed_preference_staff(db_path)
+    at = _open_preference_page()
+    target = _period_dates_of(at)[4]
+    at.text_input(key=f"pref_{target}_end").input("13:00")
+    _save_preferences(at)
+
+    pref = _saved(db_path, full, target)
+    assert pref.override_end_time == "13:00"
+    assert pref.override_start_time is None
+
+
+def test_preference_saves_late_start(db_path):
+    full, _, _ = _seed_preference_staff(db_path)
+    at = _open_preference_page()
+    target = _period_dates_of(at)[5]
+    at.text_input(key=f"pref_{target}_start").input("10:00")
+    _save_preferences(at)
+
+    pref = _saved(db_path, full, target)
+    assert pref.override_start_time == "10:00"
+    assert pref.override_end_time is None
+
+
+def test_preference_saves_both_time_overrides(db_path):
+    full, _, _ = _seed_preference_staff(db_path)
+    at = _open_preference_page()
+    target = _period_dates_of(at)[6]
+    at.text_input(key=f"pref_{target}_start").input("10:00")
+    at.text_input(key=f"pref_{target}_end").input("13:00")
+    _save_preferences(at)
+
+    pref = _saved(db_path, full, target)
+    assert (pref.override_start_time, pref.override_end_time) == ("10:00", "13:00")
+
+
+def test_preference_saves_available_extra(db_path):
+    """通常休み曜日に「通常外だが勤務可能」を保存できること."""
+    _, _, part = _seed_preference_staff(db_path)
+    at = _open_preference_page()
+    at.selectbox(key="preference_staff").select(part)
+    at.run()
+    dates = _period_dates_of(at)
+    # 短時間Cさんは水(2)・土(5)・日(6)が通常休み
+    import datetime
+
+    target = next(
+        d for d in dates if datetime.date.fromisoformat(d).weekday() in (2, 5, 6)
+    )
+    at.checkbox(key=f"pref_{target}_available_extra").check()
+    _save_preferences(at)
+
+    pref = _saved(db_path, part, target)
+    assert pref.available_extra is True
+
+
+def test_preference_saves_note_only(db_path):
+    """備考だけの登録も許可する."""
+    full, _, _ = _seed_preference_staff(db_path)
+    at = _open_preference_page()
+    target = _period_dates_of(at)[7]
+    at.text_input(key=f"pref_{target}_note").input("通院")
+    _save_preferences(at)
+
+    pref = _saved(db_path, full, target)
+    assert pref.note == "通院"
+    assert pref.absolute_off is False
+    assert pref.prefer_off is False
+
+
+def test_preference_saves_absolute_off_with_note(db_path):
+    full, _, _ = _seed_preference_staff(db_path)
+    at = _open_preference_page()
+    target = _period_dates_of(at)[8]
+    at.checkbox(key=f"pref_{target}_absolute_off").check()
+    at.text_input(key=f"pref_{target}_note").input("家族送迎")
+    _save_preferences(at)
+
+    pref = _saved(db_path, full, target)
+    assert pref.absolute_off is True
+    assert pref.note == "家族送迎"
+
+
+def test_preference_saves_prefer_off_with_early_leave(db_path):
+    """「できれば休み。勤務するなら13時まで」を1日で保存できること."""
+    full, _, _ = _seed_preference_staff(db_path)
+    at = _open_preference_page()
+    target = _period_dates_of(at)[9]
+    at.checkbox(key=f"pref_{target}_prefer_off").check()
+    at.text_input(key=f"pref_{target}_end").input("13:00")
+    _save_preferences(at)
+
+    pref = _saved(db_path, full, target)
+    assert pref.prefer_off is True
+    assert pref.override_end_time == "13:00"
+
+
+def test_preference_saves_several_days_at_once(db_path):
+    """紙から複数日をまとめて転記できること."""
+    full, _, _ = _seed_preference_staff(db_path)
+    at = _open_preference_page()
+    dates = _period_dates_of(at)
+    at.checkbox(key=f"pref_{dates[1]}_absolute_off").check()
+    at.checkbox(key=f"pref_{dates[2]}_prefer_off").check()
+    at.text_input(key=f"pref_{dates[3]}_end").input("13:00")
+    at.text_input(key=f"pref_{dates[4]}_note").input("学校行事")
+    _save_preferences(at)
+
+    conn = get_connection(str(db_path))
+    saved = repo.list_staff_preferences(conn, full, dates[0], dates[-1])
+    conn.close()
+    assert [p.work_date for p in saved] == dates[1:5]
+
+
+def test_preference_unchanged_days_are_not_stored(db_path):
+    """通常どおりの日はレコードを作らない."""
+    full, _, _ = _seed_preference_staff(db_path)
+    at = _open_preference_page()
+    dates = _period_dates_of(at)
+    at.checkbox(key=f"pref_{dates[1]}_absolute_off").check()
+    _save_preferences(at)
+
+    conn = get_connection(str(db_path))
+    saved = repo.list_staff_preferences(conn, full, dates[0], dates[-1])
+    conn.close()
+    assert [p.work_date for p in saved] == [dates[1]]
+
+
+def test_preference_back_to_normal_removes_row(db_path):
+    """すべて通常に戻した日は行が削除される."""
+    full, _, _ = _seed_preference_staff(db_path)
+    at = _open_preference_page()
+    target = _period_dates_of(at)[2]
+    at.checkbox(key=f"pref_{target}_absolute_off").check()
+    _save_preferences(at)
+    assert _saved(db_path, full, target) is not None
+
+    at.checkbox(key=f"pref_{target}_absolute_off").uncheck()
+    _save_preferences(at)
+    assert _saved(db_path, full, target) is None
+
+
+def test_preference_saved_value_is_shown_on_reload(db_path):
+    full, _, _ = _seed_preference_staff(db_path)
+    at = _open_preference_page()
+    target = _period_dates_of(at)[2]
+    at.text_input(key=f"pref_{target}_end").input("13:00")
+    _save_preferences(at)
+
+    reopened = _open_preference_page()
+    assert reopened.text_input(key=f"pref_{target}_end").value == "13:00"
+    table = reopened.dataframe[0].value
+    row = table[table["スタッフ"] == "常勤Aさん"].iloc[0]
+    assert "13:00まで" in [row[c] for c in table.columns if c != "スタッフ"]
+
+
+def test_preference_shows_success_message_after_save(db_path):
+    _seed_preference_staff(db_path)
+    at = _open_preference_page()
+    at.checkbox(key=f"pref_{_period_dates_of(at)[2]}_absolute_off").check()
+    _save_preferences(at)
+    assert any("保存しました" in s.value for s in at.success)
+
+
+def test_preference_rejects_absolute_off_with_time_override(db_path):
+    """絶対休みと勤務時刻の変更は同時に指定できない."""
+    full, _, _ = _seed_preference_staff(db_path)
+    at = _open_preference_page()
+    target = _period_dates_of(at)[2]
+    at.checkbox(key=f"pref_{target}_absolute_off").check()
+    at.text_input(key=f"pref_{target}_end").input("13:00")
+    _save_preferences(at)
+
+    assert any("絶対休み" in e.value for e in at.error)
+    assert _saved(db_path, full, target) is None
+
+
+def test_preference_rejects_invalid_time_format(db_path):
+    full, _, _ = _seed_preference_staff(db_path)
+    at = _open_preference_page()
+    target = _period_dates_of(at)[2]
+    at.text_input(key=f"pref_{target}_end").input("13時")
+    _save_preferences(at)
+
+    assert any("HH:MM" in e.value for e in at.error)
+    assert _saved(db_path, full, target) is None
+
+
+def test_preference_rejects_reversed_effective_time(db_path):
+    """通常09:00始業に対し遅出16:00は勤務時間がなくなるため保存しない."""
+    full, _, _ = _seed_preference_staff(db_path)
+    at = _open_preference_page()
+    target = _period_dates_of(at)[2]
+    at.text_input(key=f"pref_{target}_start").input("16:00")
+    _save_preferences(at)
+
+    assert at.error
+    assert _saved(db_path, full, target) is None
+
+
+def test_preference_switching_staff_does_not_carry_unsaved_input(db_path):
+    """未保存の入力が別スタッフの画面に残らないこと."""
+    full, no_time, part = _seed_preference_staff(db_path)
+    at = _open_preference_page()
+    target = _period_dates_of(at)[2]
+    at.checkbox(key=f"pref_{target}_absolute_off").check()
+    at.run()
+
+    at.selectbox(key="preference_staff").select(part)
+    at.run()
+    assert not at.exception
+    assert at.checkbox(key=f"pref_{target}_absolute_off").value is False
+    _save_preferences(at)
+    assert _saved(db_path, part, target) is None
+    assert _saved(db_path, full, target) is None
 
 
 # ---------------------------------------------------------------------------

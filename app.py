@@ -6,10 +6,11 @@ APP_TITLE = "清掃人員シフト検証"
 
 
 USAGE_STEPS = [
-    "① スタッフ管理（従業員番号・ロール・スキル）",
+    "① スタッフ管理（通常勤務曜日・通常勤務時間・ロール・スキル）",
     "② 勤怠CSV取込",
     "③ 日別必要人数・ロール・スキル条件の入力",
     "④ 日別検証結果の確認・Excel出力",
+    "⑤ 勤務希望入力（対象期間の「普段と違う希望だけ」を登録）",
 ]
 
 
@@ -19,6 +20,7 @@ MENU_PAGES = [
     ("pages/02_attendance_import.py", "② 勤怠CSV取込"),
     ("pages/03_requirements.py", "③ 日別必要条件"),
     ("pages/04_validation.py", "④ 日別検証"),
+    ("pages/05_preferences.py", "⑤ 勤務希望入力"),
 ]
 
 

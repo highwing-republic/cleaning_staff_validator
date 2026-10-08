@@ -16,9 +16,12 @@ from src.constants import (
 from src.models import (
     DailyRequirementInput,
     RoleRequirementInput,
+    StaffDatePreferenceInput,
+    StaffDetail,
     ValidationError,
 )
-from src.work_time import parse_hhmm
+from src.period_utils import is_valid_date
+from src.work_time import normalize_hhmm, parse_hhmm
 
 # ---------------------------------------------------------------------------
 # エラーコード（Staff）
@@ -38,6 +41,18 @@ STAFF_WEEKDAY_INVALID = "STAFF_WEEKDAY_INVALID"
 STAFF_WEEKDAY_DUPLICATED = "STAFF_WEEKDAY_DUPLICATED"
 STAFF_SPECIAL_SKILL_DUPLICATED = "STAFF_SPECIAL_SKILL_DUPLICATED"
 STAFF_SPECIAL_SKILL_NOT_FOUND = "STAFF_SPECIAL_SKILL_NOT_FOUND"
+
+# エラーコード（期間別勤務希望・Phase 6）
+PREFERENCE_WORK_DATE_INVALID = "PREFERENCE_WORK_DATE_INVALID"
+PREFERENCE_STAFF_NOT_FOUND = "PREFERENCE_STAFF_NOT_FOUND"
+PREFERENCE_OVERRIDE_TIME_INVALID = "PREFERENCE_OVERRIDE_TIME_INVALID"
+PREFERENCE_OVERRIDE_TIME_ORDER_INVALID = "PREFERENCE_OVERRIDE_TIME_ORDER_INVALID"
+PREFERENCE_ABSOLUTE_OFF_CONFLICT = "PREFERENCE_ABSOLUTE_OFF_CONFLICT"
+PREFERENCE_EFFECTIVE_TIME_ORDER_INVALID = "PREFERENCE_EFFECTIVE_TIME_ORDER_INVALID"
+PREFERENCE_DUPLICATED_DATE = "PREFERENCE_DUPLICATED_DATE"
+PREFERENCE_DATE_OUT_OF_PERIOD = "PREFERENCE_DATE_OUT_OF_PERIOD"
+# 警告扱い（保存は妨げない）: 通常勤務時間が未設定で実効時間を確定できない
+PREFERENCE_STANDARD_TIME_UNSET = "PREFERENCE_STANDARD_TIME_UNSET"
 
 # エラーコード（Requirement）
 REQUIREMENT_WORK_DATE_INVALID = "REQUIREMENT_WORK_DATE_INVALID"
@@ -439,3 +454,190 @@ def _validate_skill_requirement(req: DailyRequirementInput) -> list[ValidationEr
         )
 
     return errors
+
+
+# ---------------------------------------------------------------------------
+# 期間別勤務希望（Phase 6）
+# ---------------------------------------------------------------------------
+
+
+def validate_staff_date_preference(
+    pref: StaffDatePreferenceInput,
+    staff: StaffDetail | None = None,
+) -> list[ValidationError]:
+    """1日分の勤務希望の検証（保存を止めるエラーのみ）.
+
+    staff を渡した場合は、通常勤務時刻とoverrideを突き合わせた実効時間の順序も検証する。
+    通常勤務時刻が未設定で実効時間を確定できない場合はここではエラーにせず、
+    画面側で警告として示す（紙からの転記を止めないため。
+    警告の判定は day_conditions.resolve_staff_day_condition の time_status で行う）。
+    """
+    errors: list[ValidationError] = []
+    work_date = pref.work_date
+
+    if not is_valid_date(work_date):
+        errors.append(
+            ValidationError(
+                code=PREFERENCE_WORK_DATE_INVALID,
+                message="日付は YYYY-MM-DD 形式の実在する日付で入力してください。",
+                staff_id=pref.staff_id,
+                work_date=work_date if isinstance(work_date, str) else None,
+                field_name="work_date",
+            )
+        )
+
+    start = _validate_override_time(
+        pref, pref.override_start_time, "override_start_time", "開始時刻", errors
+    )
+    end = _validate_override_time(
+        pref, pref.override_end_time, "override_end_time", "終了時刻", errors
+    )
+
+    if start is not None and end is not None and end <= start:
+        errors.append(
+            ValidationError(
+                code=PREFERENCE_OVERRIDE_TIME_ORDER_INVALID,
+                message="終了時刻は開始時刻より後にしてください。",
+                staff_id=pref.staff_id,
+                work_date=work_date,
+                field_name="override_end_time",
+            )
+        )
+
+    errors += _validate_absolute_off_conflict(pref)
+
+    if not errors and staff is not None:
+        errors += _validate_effective_time_order(pref, staff, start, end)
+
+    return errors
+
+
+def _validate_override_time(
+    pref: StaffDatePreferenceInput,
+    value: str | None,
+    field_name: str,
+    label: str,
+    errors: list[ValidationError],
+) -> int | None:
+    """override時刻を検証し、分に変換して返す. 未入力はNone."""
+    if _is_blank(value):
+        return None
+    minutes = parse_hhmm(value)
+    if minutes is None:
+        errors.append(
+            ValidationError(
+                code=PREFERENCE_OVERRIDE_TIME_INVALID,
+                message=f"{label}は HH:MM（00:00〜23:59）で入力してください。",
+                staff_id=pref.staff_id,
+                work_date=pref.work_date,
+                field_name=field_name,
+            )
+        )
+    return minutes
+
+
+def _validate_absolute_off_conflict(
+    pref: StaffDatePreferenceInput,
+) -> list[ValidationError]:
+    """絶対休みと同時に指定しても意味がない項目を検出する（noteの併用は許可）."""
+    if not pref.absolute_off:
+        return []
+
+    conflicts = []
+    if pref.available_extra:
+        conflicts.append("通常外だが勤務可能")
+    if not _is_blank(pref.override_start_time) or not _is_blank(pref.override_end_time):
+        conflicts.append("勤務時刻の変更")
+    if not conflicts:
+        return []
+
+    return [
+        ValidationError(
+            code=PREFERENCE_ABSOLUTE_OFF_CONFLICT,
+            message=(
+                "絶対休みの日に「" + "」「".join(conflicts) + "」は指定できません"
+                "（備考は併用できます）。"
+            ),
+            staff_id=pref.staff_id,
+            work_date=pref.work_date,
+            field_name="absolute_off",
+        )
+    ]
+
+
+def _validate_effective_time_order(
+    pref: StaffDatePreferenceInput,
+    staff: StaffDetail,
+    override_start: int | None,
+    override_end: int | None,
+) -> list[ValidationError]:
+    """通常勤務時刻とoverrideを合成した実効時間が 開始 < 終了 になるか.
+
+    通常勤務時刻が未設定で確定できない場合は、ここではエラーにしない（警告扱い）。
+    """
+    if pref.absolute_off:
+        return []
+
+    start = override_start
+    if start is None:
+        start = parse_hhmm(normalize_hhmm(staff.staff.standard_start_time))
+    end = override_end
+    if end is None:
+        end = parse_hhmm(normalize_hhmm(staff.staff.standard_end_time))
+
+    if start is None or end is None or end > start:
+        return []
+
+    return [
+        ValidationError(
+            code=PREFERENCE_EFFECTIVE_TIME_ORDER_INVALID,
+            message=(
+                "通常勤務時間と組み合わせると勤務時間がなくなります"
+                "（開始が終了以降になっています）。"
+            ),
+            staff_id=pref.staff_id,
+            work_date=pref.work_date,
+            field_name="override_end_time",
+        )
+    ]
+
+
+def validate_staff_period_preferences(
+    staff_id: int,
+    work_dates: list[str],
+    preferences: list[StaffDatePreferenceInput],
+    staff: StaffDetail | None = None,
+) -> list[ValidationError]:
+    """期間分の勤務希望をまとめて検証する（日付の重複・期間外も見る）."""
+    errors: list[ValidationError] = []
+    target_dates = set(work_dates)
+    seen: set[str] = set()
+
+    for pref in preferences:
+        if pref.work_date in seen:
+            errors.append(
+                ValidationError(
+                    code=PREFERENCE_DUPLICATED_DATE,
+                    message="同じ日付の希望が重複しています。",
+                    staff_id=staff_id,
+                    work_date=pref.work_date,
+                    field_name="work_date",
+                )
+            )
+        seen.add(pref.work_date)
+
+        if pref.work_date not in target_dates:
+            errors.append(
+                ValidationError(
+                    code=PREFERENCE_DATE_OUT_OF_PERIOD,
+                    message="対象期間外の日付が含まれています。",
+                    staff_id=staff_id,
+                    work_date=pref.work_date,
+                    field_name="work_date",
+                )
+            )
+
+        errors += validate_staff_date_preference(pref, staff)
+
+    return errors
+

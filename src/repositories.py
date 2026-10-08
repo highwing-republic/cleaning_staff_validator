@@ -19,6 +19,7 @@ from src.models import (
     DailyRequirementInput,
     RoleRequirementInput,
     SpecialSkill,
+    StaffDatePreferenceInput,
     StaffDetail,
     StaffInput,
 )
@@ -317,6 +318,166 @@ def list_staff_details(
         )
         for staff in staff_list
     ]
+
+
+# ---------------------------------------------------------------------------
+# 期間別勤務希望（行がない = 通常）
+# ---------------------------------------------------------------------------
+
+
+def _row_to_preference(row: sqlite3.Row) -> StaffDatePreferenceInput:
+    return StaffDatePreferenceInput(
+        staff_id=row["staff_id"],
+        work_date=row["work_date"],
+        absolute_off=bool(row["absolute_off"]),
+        prefer_off=bool(row["prefer_off"]),
+        available_extra=bool(row["available_extra"]),
+        override_start_time=row["override_start_time"],
+        override_end_time=row["override_end_time"],
+        note=row["note"],
+    )
+
+
+def get_staff_date_preference(
+    conn: sqlite3.Connection, staff_id: int, work_date: str
+) -> StaffDatePreferenceInput | None:
+    """1日分の勤務希望. 行がなければNone（= 通常条件を使う）."""
+    row = conn.execute(
+        "SELECT * FROM staff_date_preferences WHERE staff_id = ? AND work_date = ?",
+        (staff_id, work_date),
+    ).fetchone()
+    return None if row is None else _row_to_preference(row)
+
+
+def list_staff_preferences(
+    conn: sqlite3.Connection, staff_id: int, start_date: str, end_date: str
+) -> list[StaffDatePreferenceInput]:
+    """1スタッフの期間内の勤務希望を日付昇順で返す（存在する行のみ）."""
+    rows = conn.execute(
+        "SELECT * FROM staff_date_preferences "
+        "WHERE staff_id = ? AND work_date BETWEEN ? AND ? ORDER BY work_date",
+        (staff_id, start_date, end_date),
+    ).fetchall()
+    return [_row_to_preference(row) for row in rows]
+
+
+def list_preferences_in_period(
+    conn: sqlite3.Connection, start_date: str, end_date: str
+) -> list[StaffDatePreferenceInput]:
+    """期間内の全スタッフの勤務希望（スタッフ×日付の一覧表示用）."""
+    rows = conn.execute(
+        "SELECT * FROM staff_date_preferences WHERE work_date BETWEEN ? AND ? "
+        "ORDER BY staff_id, work_date",
+        (start_date, end_date),
+    ).fetchall()
+    return [_row_to_preference(row) for row in rows]
+
+
+_UPSERT_PREFERENCE_SQL = """
+    INSERT INTO staff_date_preferences (
+        staff_id, work_date, absolute_off, prefer_off, available_extra,
+        override_start_time, override_end_time, note, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT (staff_id, work_date) DO UPDATE SET
+        absolute_off = excluded.absolute_off,
+        prefer_off = excluded.prefer_off,
+        available_extra = excluded.available_extra,
+        override_start_time = excluded.override_start_time,
+        override_end_time = excluded.override_end_time,
+        note = excluded.note,
+        updated_at = excluded.updated_at
+"""
+
+
+def _preference_params(pref: StaffDatePreferenceInput, now: str) -> tuple:
+    return (
+        pref.staff_id,
+        pref.work_date,
+        int(pref.absolute_off),
+        int(pref.prefer_off),
+        int(pref.available_extra),
+        _optional_time(pref.override_start_time),
+        _optional_time(pref.override_end_time),
+        _optional_note(pref.note),
+        now,
+        now,
+    )
+
+
+def _optional_note(note: str | None) -> str | None:
+    if not isinstance(note, str):
+        return None
+    return note.strip() or None
+
+
+def _upsert_preference(
+    conn: sqlite3.Connection, pref: StaffDatePreferenceInput, now: str
+) -> None:
+    """呼び出し側のトランザクション内で使う1件分のupsert."""
+    conn.execute(_UPSERT_PREFERENCE_SQL, _preference_params(pref, now))
+
+
+def _delete_preference(conn: sqlite3.Connection, staff_id: int, work_date: str) -> None:
+    conn.execute(
+        "DELETE FROM staff_date_preferences WHERE staff_id = ? AND work_date = ?",
+        (staff_id, work_date),
+    )
+
+
+def upsert_staff_date_preference(
+    conn: sqlite3.Connection, pref: StaffDatePreferenceInput
+) -> None:
+    """1日分の勤務希望を保存する. すべて通常どおりの内容なら行を削除する."""
+    with conn:
+        if pref.is_empty:
+            _delete_preference(conn, pref.staff_id, pref.work_date)
+        else:
+            _upsert_preference(conn, pref, _now())
+
+
+def delete_staff_date_preference(
+    conn: sqlite3.Connection, staff_id: int, work_date: str
+) -> None:
+    """その日を通常条件に戻す（行を削除する）."""
+    with conn:
+        _delete_preference(conn, staff_id, work_date)
+
+
+def save_staff_period_preferences(
+    conn: sqlite3.Connection,
+    staff_id: int,
+    work_dates: list[str],
+    preferences: list[StaffDatePreferenceInput],
+) -> None:
+    """1スタッフの期間分の勤務希望を1トランザクションで保存する.
+
+    work_dates のうち preferences に含まれない日、および内容が通常どおりの日は
+    行を削除する（行がない = 通常 を維持するため）。
+    途中で失敗した場合は一部の日だけ保存された状態にならない。
+    """
+    target_dates = set(work_dates)
+    for pref in preferences:
+        if pref.staff_id != staff_id:
+            raise ValueError(
+                f"preference staff_id {pref.staff_id!r} does not match {staff_id!r}"
+            )
+        if pref.work_date not in target_dates:
+            raise ValueError(f"preference work_date {pref.work_date!r} is out of period")
+
+    now = _now()
+    keep = {p.work_date: p for p in preferences if not p.is_empty}
+
+    with conn:
+        for work_date in work_dates:
+            pref = keep.get(work_date)
+            if pref is None:
+                _delete_preference(conn, staff_id, work_date)
+            else:
+                _upsert_preference(conn, pref, now)
+
+
+def _now() -> str:
+    return datetime.now().isoformat(timespec="seconds")
 
 
 # ---------------------------------------------------------------------------

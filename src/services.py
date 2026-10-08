@@ -9,6 +9,7 @@ import sqlite3
 from src import repositories as repo
 from src.attendance_import import is_cleaning_department, parse_attendance_csv
 from src.constants import SHIFT_TYPE_BLANK, SHIFT_TYPE_UNKNOWN
+from src.day_conditions import resolve_period_conditions
 from src.models import (
     AttendanceParseResult,
     AttendancePreview,
@@ -16,11 +17,19 @@ from src.models import (
     ImportIssue,
     MonthlyValidationResult,
     SpecialSkill,
+    StaffDatePreferenceInput,
+    StaffDayCondition,
+    StaffDetail,
     StaffInput,
     ValidationError,
 )
 from src.staffing_validation import validate_month_staffing
-from src.validation import STAFF_SPECIAL_SKILL_NOT_FOUND, validate_staff
+from src.validation import (
+    PREFERENCE_STAFF_NOT_FOUND,
+    STAFF_SPECIAL_SKILL_NOT_FOUND,
+    validate_staff,
+    validate_staff_period_preferences,
+)
 
 # 照合 warning コード（取込は可能）
 UNMATCHED_STAFF = "ATTENDANCE_UNMATCHED_STAFF"
@@ -271,3 +280,85 @@ def _match_warnings(staff: StaffInput, csv_row: AttendanceShiftInput) -> list[Im
             )
         )
     return issues
+
+
+# ---------------------------------------------------------------------------
+# 期間別勤務希望（Phase 6）
+# ---------------------------------------------------------------------------
+
+
+def get_period_conditions(
+    conn: sqlite3.Connection,
+    staff: StaffDetail,
+    work_dates: list[str],
+) -> list[StaffDayCondition]:
+    """1スタッフの期間分の実効条件を求める（通常条件＋保存済みの希望）."""
+    if not work_dates:
+        return []
+    saved = {
+        p.work_date: p
+        for p in repo.list_staff_preferences(
+            conn, staff.staff.staff_id, work_dates[0], work_dates[-1]
+        )
+    }
+    return resolve_period_conditions(staff, work_dates, saved)
+
+
+def get_period_conditions_by_staff(
+    conn: sqlite3.Connection,
+    work_dates: list[str],
+    include_inactive: bool = False,
+) -> dict[int, list[StaffDayCondition]]:
+    """スタッフ×日付の一覧表示用. 希望は期間分をまとめて1クエリで取得する."""
+    if not work_dates:
+        return {}
+
+    staff_details = repo.list_staff_details(conn, include_inactive=include_inactive)
+    saved: dict[int, dict[str, StaffDatePreferenceInput]] = {}
+    for pref in repo.list_preferences_in_period(conn, work_dates[0], work_dates[-1]):
+        saved.setdefault(pref.staff_id, {})[pref.work_date] = pref
+
+    return {
+        detail.staff.staff_id: resolve_period_conditions(
+            detail, work_dates, saved.get(detail.staff.staff_id, {})
+        )
+        for detail in staff_details
+    }
+
+
+def validate_period_preferences(
+    conn: sqlite3.Connection,
+    staff_id: int,
+    work_dates: list[str],
+    preferences: list[StaffDatePreferenceInput],
+) -> list[ValidationError]:
+    """保存前の検証（スタッフ存在・日付・時刻・矛盾）."""
+    staff = repo.get_staff_detail(conn, staff_id)
+    if staff is None:
+        return [
+            ValidationError(
+                code=PREFERENCE_STAFF_NOT_FOUND,
+                message="対象のスタッフが見つかりません。",
+                staff_id=staff_id,
+                field_name="staff_id",
+            )
+        ]
+    return validate_staff_period_preferences(staff_id, work_dates, preferences, staff)
+
+
+def save_period_preferences(
+    conn: sqlite3.Connection,
+    staff_id: int,
+    work_dates: list[str],
+    preferences: list[StaffDatePreferenceInput],
+) -> list[ValidationError]:
+    """検証に通った場合のみ、1スタッフの期間分を1トランザクションで保存する.
+
+    エラーがあれば何も保存せずエラー一覧を返す（空リスト = 保存成功）。
+    """
+    errors = validate_period_preferences(conn, staff_id, work_dates, preferences)
+    if errors:
+        return errors
+    repo.save_staff_period_preferences(conn, staff_id, work_dates, preferences)
+    return []
+

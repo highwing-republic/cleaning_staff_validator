@@ -176,6 +176,52 @@ def initialize_database(conn: sqlite3.Connection) -> None:
             """
         )
 
+        # 期間別勤務希望（「今回だけ何が違うか」）。通常どおりの日は行を作らない。
+        # 期間そのものはテーブルにせず日付で持つ（期間が重なっても希望を動かさずに済む）。
+        # override_* は「その日に出勤するなら何時か」で、出勤を強制するものではない。
+        conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS staff_date_preferences (
+                preference_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                staff_id INTEGER NOT NULL,
+                work_date TEXT NOT NULL
+                    -- 暦上ありえない日付を弾く。date('2026-02-30') は月末を検証せず
+                    -- 入力をそのまま返すため、ユリウス日へ往復させて一致を見る
+                    -- （'2026-02-30' -> '2026-03-02' で不一致, '2026-13-01' -> NULL）。
+                    -- SQLiteのCHECKはNULLを成立と扱うので = ではなく IS で比較する
+                    CHECK (work_date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
+                           AND date(julianday(work_date)) IS work_date),
+                absolute_off INTEGER NOT NULL DEFAULT 0 CHECK (absolute_off IN (0, 1)),
+                prefer_off INTEGER NOT NULL DEFAULT 0 CHECK (prefer_off IN (0, 1)),
+                available_extra INTEGER NOT NULL DEFAULT 0 CHECK (available_extra IN (0, 1)),
+                override_start_time TEXT NULL
+                    CHECK (override_start_time IS NULL
+                           OR ({_hhmm_check('override_start_time')})),
+                override_end_time TEXT NULL
+                    CHECK (override_end_time IS NULL
+                           OR ({_hhmm_check('override_end_time')}
+                               AND (override_start_time IS NULL
+                                    OR override_end_time > override_start_time))),
+                note TEXT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                -- 絶対休みの日に勤務時刻や通常外勤務可を併せ持っても意味がない
+                CHECK (absolute_off = 0
+                       OR (available_extra = 0
+                           AND override_start_time IS NULL
+                           AND override_end_time IS NULL)),
+                UNIQUE (staff_id, work_date),
+                FOREIGN KEY (staff_id) REFERENCES staff (staff_id)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS ix_staff_date_preferences_date
+            ON staff_date_preferences (work_date)
+            """
+        )
+
         # required_total_staff は最低必要人数。スキル条件は
         # 「skill_level >= required_skill_level の清掃勤務者が required_skill_count 名以上」
         conn.execute(
