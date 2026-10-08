@@ -403,6 +403,7 @@ class GenerationStaff:
     day_conditions は work_date -> StaffDayCondition（通常条件と勤務希望を
     突き合わせた結果）。Solverは曜日・勤務希望を直接見ず、この結果だけを使う。
     max_consecutive_days が None なら連勤の上限なし。
+    target_days_per_week が None なら目標勤務日数の最適化対象外。
     """
 
     staff_id: int
@@ -412,6 +413,8 @@ class GenerationStaff:
     skill_level: int
     day_conditions: dict[str, StaffDayCondition] = field(default_factory=dict)
     max_consecutive_days: int | None = None
+    # 週に何日程度勤務したいか（Noneなら目標なし）. Hard Constraintではない
+    target_days_per_week: int | None = None
 
 
 @dataclass(frozen=True)
@@ -505,6 +508,46 @@ class DailyGenerationResult:
 
 
 @dataclass(frozen=True)
+class StaffGenerationSummary:
+    """スタッフ1名分の勤務状況（希望休の尊重と目標勤務日数への近さ）.
+
+    目標勤務日数の比較は整数スケールで行う（10日・11日などの期間で
+    丸め方によって不自然にならないようにするため）。
+        target_scaled = target_days_per_week * period_days
+        actual_scaled = 7 * scheduled_days
+        deviation_scaled = abs(actual_scaled - target_scaled)
+    target_days_per_week が None の場合、scaled値はすべて None（最適化対象外）。
+    画面では scaled 値をそのまま出さず、target_days（日数）へ戻して表示する。
+    """
+
+    staff_id: int
+    staff_name: str
+    scheduled_days: int
+    period_days: int
+    target_days_per_week: int | None = None
+    target_scaled: int | None = None
+    actual_scaled: int | None = None
+    deviation_scaled: int | None = None
+    prefer_off_requested_count: int = 0
+    prefer_off_worked_count: int = 0
+
+    @property
+    def has_target(self) -> bool:
+        return self.target_days_per_week is not None
+
+    @property
+    def target_days(self) -> float | None:
+        """期間に換算した目安日数（表示用. 例 14日・週3日 → 6.0）."""
+        if self.target_scaled is None:
+            return None
+        return self.target_scaled / 7
+
+    @property
+    def prefer_off_respected_count(self) -> int:
+        return self.prefer_off_requested_count - self.prefer_off_worked_count
+
+
+@dataclass(frozen=True)
 class ScheduleGenerationResult:
     """期間分の生成結果.
 
@@ -517,6 +560,7 @@ class ScheduleGenerationResult:
     solver_status: str = SOLVER_STATUS_OPTIMAL
     days: list[DailyGenerationResult] = field(default_factory=list)
     assignments: list[GeneratedAssignment] = field(default_factory=list)
+    staff_summaries: list[StaffGenerationSummary] = field(default_factory=list)
     issues: list[GenerationIssue] = field(default_factory=list)
     solve_seconds: float = 0.0
 
@@ -549,3 +593,29 @@ class ScheduleGenerationResult:
     def count_status(self, status: str) -> int:
         return sum(1 for d in self.days if d.status == status)
 
+    # --- 希望休の尊重（最適化結果であり制約違反ではない） ---
+
+    @property
+    def prefer_off_requested_total(self) -> int:
+        return sum(s.prefer_off_requested_count for s in self.staff_summaries)
+
+    @property
+    def prefer_off_worked_total(self) -> int:
+        return sum(s.prefer_off_worked_count for s in self.staff_summaries)
+
+    @property
+    def prefer_off_respected_total(self) -> int:
+        return self.prefer_off_requested_total - self.prefer_off_worked_total
+
+    @property
+    def total_target_deviation(self) -> int:
+        """目標勤務日数からの乖離の合計（整数スケール）. 目標なしのスタッフは含まない."""
+        return sum(
+            s.deviation_scaled for s in self.staff_summaries if s.deviation_scaled is not None
+        )
+
+    def staff_summary(self, staff_id: int) -> StaffGenerationSummary | None:
+        for summary in self.staff_summaries:
+            if summary.staff_id == staff_id:
+                return summary
+        return None

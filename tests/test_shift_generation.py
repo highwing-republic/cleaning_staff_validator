@@ -50,6 +50,7 @@ def make_staff(
     weekdays: tuple[int, ...] = EVERY_WEEKDAY,
     preferences: dict[str, StaffDatePreferenceInput] | None = None,
     max_consecutive_days: int | None = None,
+    target_days_per_week: int | None = None,
     work_dates: list[str] | None = None,
 ) -> GenerationStaff:
     """通常条件と勤務希望から day_conditions を作ったSolver入力を返す."""
@@ -74,6 +75,7 @@ def make_staff(
         skill_level=skill_level,
         day_conditions=conditions,
         max_consecutive_days=max_consecutive_days,
+        target_days_per_week=target_days_per_week,
     )
 
 

@@ -1193,6 +1193,26 @@ def _click_generate(at):
     return at
 
 
+def _table_with_column(at, column):
+    """列名で表を特定する（表を増やしても位置指定で壊れないようにする）."""
+    for element in at.dataframe:
+        if column in element.value.columns:
+            return element.value
+    raise AssertionError(f"列が見つかりません: {column}")
+
+
+def _assignment_grid(at):
+    return _table_with_column(at, "出勤日数")
+
+
+def _staff_table(at):
+    return _table_with_column(at, "実勤務")
+
+
+def _daily_table(at):
+    return _table_with_column(at, "人数不足")
+
+
 def _seed_generation_staff(db_path, **kwargs):
     conn = get_connection(str(db_path))
     ids = {
@@ -1287,7 +1307,7 @@ def test_generate_page_shows_the_assignment_grid(db_path):
     at = _open_generate_page()
     _click_generate(at)
 
-    grid = at.dataframe[-2].value
+    grid = _assignment_grid(at)
     assert list(grid["スタッフ"]) == ["リーダー田中", "清掃Aさん", "短時間Bさん"]
     assert len(grid.columns) == len(dates) + 2      # スタッフ + 出勤日数 + 各日
     first_day_column = grid.columns[2]
@@ -1313,7 +1333,7 @@ def test_generate_page_shows_effective_time_for_early_leave(db_path):
     at = _open_generate_page()
     _click_generate(at)
 
-    grid = at.dataframe[-2].value
+    grid = _assignment_grid(at)
     leader_row = grid[grid["スタッフ"] == "リーダー田中"].iloc[0]
     assert leader_row[grid.columns[2]] == "09:00-13:00"
 
@@ -1330,7 +1350,7 @@ def test_generate_page_shows_staff_shortage(db_path):
     _click_generate(at)
 
     assert any("2名不足" in w.value for w in at.warning)
-    daily = at.dataframe[-1].value
+    daily = _daily_table(at)
     assert list(daily["人数不足"])[0] == "2"
     assert list(daily["状態"])[0] == "不足"
 
@@ -1348,7 +1368,7 @@ def test_generate_page_shows_role_shortage(db_path):
     _click_generate(at)
 
     assert any("チェッカー" in w.value for w in at.warning)
-    daily = at.dataframe[-1].value
+    daily = _daily_table(at)
     assert list(daily["ロール不足"])[0] == "チェッカー 1名"
 
 
@@ -1370,7 +1390,7 @@ def test_generate_page_shows_skill_shortage(db_path):
     _click_generate(at)
 
     assert any("スキル条件" in w.value for w in at.warning)
-    daily = at.dataframe[-1].value
+    daily = _daily_table(at)
     assert list(daily["スキル不足"])[0] == "1名"
 
 
@@ -1379,7 +1399,7 @@ def test_generate_page_shows_requirement_missing_days(db_path):
     at = _open_generate_page()
     _click_generate(at)
 
-    daily = at.dataframe[-1].value
+    daily = _daily_table(at)
     assert list(daily["状態"])[0] == "要件未設定"
     assert list(daily["必要"])[0] == "-"
     assert list(daily["配置"])[0] == 0
@@ -1396,7 +1416,7 @@ def test_generate_page_does_not_overstaff(db_path):
     at = _open_generate_page()
     _click_generate(at)
 
-    daily = at.dataframe[-1].value
+    daily = _daily_table(at)
     assert set(daily["配置"]) == {1}
     metrics = {m.label: m.value for m in at.metric}
     assert metrics["総出勤日数"] == f"{len(dates)}日"
@@ -1423,6 +1443,150 @@ def test_generate_page_result_is_cleared_when_period_changes(db_path):
     assert not at.exception
     assert "_generation_result" not in at.session_state
     assert any("勤務案を作成" in i.value for i in at.info)
+
+
+def test_generate_page_shows_prefer_off_respect(db_path):
+    """希望休の尊重状況が表示されること（Phase 9）."""
+    ids = _seed_generation_staff(db_path)
+    at = _open_generate_page()
+    dates = _generate_dates(at)
+
+    conn = get_connection(str(db_path))
+    repo.save_staff_period_preferences(
+        conn, ids["part"], dates,
+        [StaffDatePreferenceInput(ids["part"], dates[0], prefer_off=True)],
+    )
+    conn.close()
+    _seed_generation_requirements(
+        db_path, dates,
+        [DailyRequirementInput(work_date=d, required_total_staff=1) for d in dates],
+    )
+
+    at = _open_generate_page()
+    _click_generate(at)
+    metrics = {m.label: m.value for m in at.metric}
+    assert metrics["希望休の尊重"] == "1 / 1"
+
+
+def test_generate_page_shows_dash_when_no_day_off_was_requested(db_path):
+    _seed_generation_staff(db_path)
+    at = _open_generate_page()
+    _click_generate(at)
+    metrics = {m.label: m.value for m in at.metric}
+    assert metrics["希望休の尊重"] == "-"
+
+
+def test_generate_page_shows_staff_workday_table(db_path):
+    """スタッフ別の実勤務日数が表示されること."""
+    _seed_generation_staff(db_path)
+    at = _open_generate_page()
+    dates = _generate_dates(at)
+    _seed_generation_requirements(
+        db_path, dates,
+        [DailyRequirementInput(work_date=d, required_total_staff=3) for d in dates],
+    )
+    at = _open_generate_page()
+    _click_generate(at)
+
+    table = _staff_table(at)
+    assert list(table["スタッフ"]) == ["リーダー田中", "清掃Aさん", "短時間Bさん"]
+    assert set(table["実勤務"]) == {f"{len(dates)}日"}
+    assert "目安" in table.columns
+    assert "希望休" in table.columns
+    assert "希望休出勤" in table.columns
+
+
+def test_generate_page_shows_target_days_when_set(db_path):
+    """目標勤務日数があれば目安日数を表示する."""
+    conn = get_connection(str(db_path))
+    repo.create_staff(
+        conn, "0111", "週3日さん", CLEANER, 3, "清掃",
+        standard_start_time="09:00", standard_end_time="15:30",
+        weekdays=[0, 1, 2, 3, 4, 5, 6], target_days_per_week=3,
+    )
+    conn.close()
+    at = _open_generate_page()
+    _click_generate(at)
+
+    table = _staff_table(at)
+    row = table[table["スタッフ"] == "週3日さん"].iloc[0]
+    assert row["目安"] == "6.0日"      # 14日 × 3/7
+
+
+def test_generate_page_shows_dash_for_staff_without_a_target(db_path):
+    _seed_generation_staff(db_path)
+    at = _open_generate_page()
+    _click_generate(at)
+
+    table = _staff_table(at)
+    assert set(table["目安"]) == {"-"}
+
+
+def test_generate_page_shows_when_a_day_off_request_was_worked(db_path):
+    """希望休の日に勤務した件数が確認できること（警告ではなく一覧で示す）."""
+    conn = get_connection(str(db_path))
+    only = repo.create_staff(
+        conn, "0112", "ひとりさん", CLEANER, 3, "清掃",
+        standard_start_time="09:00", standard_end_time="15:30",
+        weekdays=[0, 1, 2, 3, 4, 5, 6],
+    )
+    conn.close()
+    at = _open_generate_page()
+    dates = _generate_dates(at)
+
+    conn = get_connection(str(db_path))
+    repo.save_staff_period_preferences(
+        conn, only, dates,
+        [StaffDatePreferenceInput(only, dates[0], prefer_off=True)],
+    )
+    conn.close()
+    _seed_generation_requirements(
+        db_path, dates,
+        [DailyRequirementInput(work_date=d, required_total_staff=1) for d in dates],
+    )
+
+    at = _open_generate_page()
+    _click_generate(at)
+
+    table = _staff_table(at)
+    row = table[table["スタッフ"] == "ひとりさん"].iloc[0]
+    assert row["希望休"] == 1
+    assert row["希望休出勤"] == 1
+    metrics = {m.label: m.value for m in at.metric}
+    assert metrics["希望休の尊重"] == "0 / 1"
+    # 希望休に勤務したことは制約違反ではないため警告にはしない
+    assert not any("希望休" in w.value for w in at.warning)
+
+
+def test_generate_page_distributes_towards_targets(db_path):
+    """目標勤務日数に応じて配分されること."""
+    conn = get_connection(str(db_path))
+    heavy = repo.create_staff(
+        conn, "0121", "常勤さん", CLEANER, 3, "清掃",
+        standard_start_time="09:00", standard_end_time="15:30",
+        weekdays=[0, 1, 2, 3, 4, 5, 6], target_days_per_week=5,
+    )
+    light = repo.create_staff(
+        conn, "0122", "パートさん", CLEANER, 3, "清掃",
+        standard_start_time="09:00", standard_end_time="15:30",
+        weekdays=[0, 1, 2, 3, 4, 5, 6], target_days_per_week=2,
+    )
+    conn.close()
+    at = _open_generate_page()
+    dates = _generate_dates(at)
+    _seed_generation_requirements(
+        db_path, dates,
+        [DailyRequirementInput(work_date=d, required_total_staff=1) for d in dates],
+    )
+    at = _open_generate_page()
+    _click_generate(at)
+
+    table = _staff_table(at)
+    rows = {r["スタッフ"]: r for _, r in table.iterrows()}
+    assert rows["常勤さん"]["実勤務"] == "10日"
+    assert rows["常勤さん"]["目安"] == "10.0日"
+    assert rows["パートさん"]["実勤務"] == "4日"
+    assert rows["パートさん"]["目安"] == "4.0日"
 
 
 def test_generate_page_has_no_save_button(db_path):

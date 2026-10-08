@@ -9,7 +9,11 @@ from src.constants import (
     GENERATION_STATUS_REQUIREMENT_MISSING,
     GENERATION_STATUS_SHORTAGE,
 )
-from src.models import DailyGenerationResult
+from src.models import (
+    DailyGenerationResult,
+    ScheduleGenerationResult,
+    StaffGenerationSummary,
+)
 
 OFF_LABEL = "休"
 NOT_APPLICABLE = "-"
@@ -72,3 +76,31 @@ def format_shortage_summary(day: DailyGenerationResult, role_names: dict[int, st
     if day.skill_shortage > 0:
         parts.append(f"スキル条件 {day.skill_shortage}名不足")
     return "、".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# スタッフ別の勤務状況（希望休の尊重・目標勤務日数への近さ）
+# ---------------------------------------------------------------------------
+
+
+def format_target_days(summary: StaffGenerationSummary) -> str:
+    """期間に換算した目安日数（例 '6.0日' / '4.3日'）. 目標未設定なら '-'.
+
+    Solver内部は整数スケールだが、画面にはscaled値を出さず日数へ戻して表示する。
+    """
+    if not summary.has_target:
+        return NOT_APPLICABLE
+    return f"{summary.target_days:.1f}日"
+
+
+def format_scheduled_days(summary: StaffGenerationSummary) -> str:
+    return f"{summary.scheduled_days}日"
+
+
+def format_prefer_off_respect(result: ScheduleGenerationResult) -> str:
+    """希望休の尊重状況（例 '8 / 9'）. 申請が0件なら '-'."""
+    requested = result.prefer_off_requested_total
+    if requested <= 0:
+        return NOT_APPLICABLE
+    return f"{result.prefer_off_respected_total} / {requested}"
+

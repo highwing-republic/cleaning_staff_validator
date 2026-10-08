@@ -14,18 +14,21 @@ from src.constants import (
 from src.database import get_connection, initialize_database
 from src.generation_display import (
     format_assignment_cell,
+    format_prefer_off_respect,
     format_required,
     format_role_shortages,
     format_shortage_summary,
     format_skill_shortage,
     format_staff_shortage,
     format_status,
+    format_target_days,
 )
 from src.models import DailyRequirementInput, RoleRequirementInput, StaffDatePreferenceInput
 from src.period_utils import period_dates
 
 LEADER, CHECKER, CLEANER = 1, 2, 3
 DATES = period_dates("2026-10-20", 7)
+DATES_14 = period_dates("2026-10-20", 14)
 EVERY_WEEKDAY = [0, 1, 2, 3, 4, 5, 6]
 
 
@@ -48,6 +51,7 @@ def add_staff(
     standard_end_time="15:30",
     weekdays=None,
     max_consecutive_days=None,
+    target_days_per_week=None,
 ):
     return repo.create_staff(
         conn, employee_code, staff_name, role_id, skill_level, "清掃",
@@ -55,6 +59,7 @@ def add_staff(
         standard_end_time=standard_end_time,
         weekdays=EVERY_WEEKDAY if weekdays is None else weekdays,
         max_consecutive_days=max_consecutive_days,
+        target_days_per_week=target_days_per_week,
     )
 
 
@@ -62,7 +67,7 @@ def set_requirements(conn, dates, required_total_staff=2, **kwargs):
     role_requirements = kwargs.pop("role_requirements", {})
     repo.save_period_requirements(
         conn,
-        DATES,
+        list(dates),
         [
             DailyRequirementInput(
                 work_date=d, required_total_staff=required_total_staff, **kwargs
@@ -457,3 +462,172 @@ def test_daily_display_for_a_satisfied_day(conn):
     assert format_status(day) == "充足"
     assert format_staff_shortage(day) == "0"
     assert format_shortage_summary(day, {}) == ""
+
+
+# ---------------------------------------------------------------------------
+# 希望休と目標勤務日数（Phase 9）
+# ---------------------------------------------------------------------------
+
+
+def test_request_carries_target_days_per_week(conn):
+    add_staff(conn, "0001", "Aさん", target_days_per_week=4)
+    request = services.build_generation_request(conn, DATES)
+    assert request.staff[0].target_days_per_week == 4
+
+
+def test_request_carries_no_target_when_unset(conn):
+    add_staff(conn, "0001", "Aさん")
+    request = services.build_generation_request(conn, DATES)
+    assert request.staff[0].target_days_per_week is None
+
+
+def test_request_folds_prefer_off_into_day_conditions(conn):
+    staff_id = add_staff(conn, "0001", "Aさん")
+    repo.save_staff_period_preferences(
+        conn, staff_id, DATES,
+        [StaffDatePreferenceInput(staff_id, "2026-10-21", prefer_off=True)],
+    )
+    conditions = services.build_generation_request(conn, DATES).staff[0].day_conditions
+    assert conditions["2026-10-21"].prefer_off is True
+    assert conditions["2026-10-21"].can_work is True        # 希望休は勤務不可にしない
+    assert conditions["2026-10-20"].prefer_off is False
+
+
+def test_generate_schedule_respects_prefer_off_when_possible(conn):
+    """同条件なら希望休を出していないスタッフを優先する."""
+    requesting = add_staff(conn, "0001", "希望休Aさん")
+    other = add_staff(conn, "0002", "Bさん")
+    repo.save_staff_period_preferences(
+        conn, requesting, DATES,
+        [StaffDatePreferenceInput(requesting, d, prefer_off=True) for d in DATES],
+    )
+    set_requirements(conn, DATES, required_total_staff=1)
+
+    result = services.generate_schedule(conn, DATES)
+    assert result.total_shortage == 0
+    assert result.prefer_off_worked_total == 0
+    assert result.prefer_off_requested_total == len(DATES)
+    assert len(result.working_assignments(requesting)) == 0
+    assert len(result.working_assignments(other)) == len(DATES)
+
+
+def test_generate_schedule_breaks_prefer_off_to_avoid_a_shortage(conn):
+    """不足を防ぐためなら希望休の日に勤務させる（Pass 1が最優先）."""
+    requesting = add_staff(conn, "0001", "希望休Aさん")
+    other = add_staff(conn, "0002", "Bさん")
+    repo.save_staff_period_preferences(
+        conn, requesting, DATES,
+        [StaffDatePreferenceInput(requesting, d, prefer_off=True) for d in DATES],
+    )
+    set_requirements(conn, DATES, required_total_staff=2)
+
+    result = services.generate_schedule(conn, DATES)
+    assert result.total_shortage == 0
+    assert result.prefer_off_worked_total == len(DATES)
+
+
+def test_generate_schedule_distributes_towards_targets(conn):
+    """14日・週5日と週2日 → 必要1名/日の14日を10日と4日へ分配する."""
+    heavy = add_staff(conn, "0001", "常勤Aさん", target_days_per_week=5)
+    light = add_staff(conn, "0002", "パートBさん", target_days_per_week=2)
+    set_requirements(conn, DATES_14, required_total_staff=1)
+
+    result = services.generate_schedule(conn, DATES_14)
+    assert result.total_workdays == len(DATES_14)
+    assert result.total_target_deviation == 0
+    assert result.staff_summary(heavy).scheduled_days == 10
+    assert result.staff_summary(light).scheduled_days == 4
+
+
+def test_generate_schedule_staff_summary_contents(conn):
+    staff_id = add_staff(conn, "0001", "Aさん", target_days_per_week=3)
+    repo.save_staff_period_preferences(
+        conn, staff_id, DATES_14,
+        [StaffDatePreferenceInput(staff_id, DATES_14[0], prefer_off=True)],
+    )
+    set_requirements(conn, DATES_14, required_total_staff=1)
+
+    summary = services.generate_schedule(conn, DATES_14).staff_summary(staff_id)
+    assert summary.staff_name == "Aさん"
+    assert summary.period_days == 14
+    assert summary.target_days_per_week == 3
+    assert summary.target_scaled == 42
+    assert summary.actual_scaled == 7 * summary.scheduled_days
+    assert summary.deviation_scaled == abs(summary.actual_scaled - 42)
+    assert summary.prefer_off_requested_count == 1
+    assert summary.prefer_off_worked_count == 1     # 1名しかいないので出勤する
+
+
+def test_generate_schedule_summary_covers_every_active_staff(conn):
+    active = [add_staff(conn, f"000{i}", f"S{i}") for i in (1, 2)]
+    inactive = add_staff(conn, "0009", "無効さん")
+    repo.deactivate_staff(conn, inactive)
+    set_requirements(conn, DATES, required_total_staff=1)
+
+    result = services.generate_schedule(conn, DATES)
+    assert sorted(s.staff_id for s in result.staff_summaries) == sorted(active)
+
+
+def test_generate_schedule_keeps_absolute_off_over_the_target(conn):
+    staff_id = add_staff(conn, "0001", "Aさん", target_days_per_week=7)
+    repo.save_staff_period_preferences(
+        conn, staff_id, DATES,
+        [StaffDatePreferenceInput(staff_id, DATES[1], absolute_off=True)],
+    )
+    set_requirements(conn, DATES, required_total_staff=1)
+
+    result = services.generate_schedule(conn, DATES)
+    worked = {a.work_date for a in result.working_assignments(staff_id)}
+    assert DATES[1] not in worked
+    assert result.staff_summary(staff_id).scheduled_days == len(DATES) - 1
+
+
+def test_generate_schedule_target_does_not_cause_overstaffing(conn):
+    for index in range(1, 4):
+        add_staff(conn, f"000{index}", f"S{index}", target_days_per_week=7)
+    set_requirements(conn, DATES, required_total_staff=1)
+
+    result = services.generate_schedule(conn, DATES)
+    assert all(d.scheduled_staff_count == 1 for d in result.days)
+    assert result.total_workdays == len(DATES)
+
+
+def test_generate_schedule_target_across_month_boundary(conn):
+    dates = period_dates("2026-10-28", 14)
+    staff_id = add_staff(conn, "0001", "Aさん", target_days_per_week=3)
+    add_staff(conn, "0002", "Bさん")
+    repo.save_period_requirements(
+        conn,
+        dates,
+        [DailyRequirementInput(work_date=d, required_total_staff=1) for d in dates],
+        [],
+    )
+    result = services.generate_schedule(conn, dates)
+    summary = result.staff_summary(staff_id)
+    assert summary.period_days == 14
+    assert summary.scheduled_days == 6
+    assert summary.deviation_scaled == 0
+
+
+def test_prefer_off_respect_display_from_service(conn):
+    staff_id = add_staff(conn, "0001", "Aさん")
+    add_staff(conn, "0002", "Bさん")
+    repo.save_staff_period_preferences(
+        conn, staff_id, DATES,
+        [StaffDatePreferenceInput(staff_id, d, prefer_off=True) for d in DATES[:3]],
+    )
+    set_requirements(conn, DATES, required_total_staff=1)
+
+    result = services.generate_schedule(conn, DATES)
+    assert format_prefer_off_respect(result) == "3 / 3"
+
+
+def test_target_days_display_from_service(conn):
+    with_target = add_staff(conn, "0001", "Aさん", target_days_per_week=3)
+    without = add_staff(conn, "0002", "Bさん")
+    set_requirements(conn, DATES_14, required_total_staff=1)
+
+    result = services.generate_schedule(conn, DATES_14)
+    assert format_target_days(result.staff_summary(with_target)) == "6.0日"
+    assert format_target_days(result.staff_summary(without)) == "-"
+

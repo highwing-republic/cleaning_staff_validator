@@ -6,7 +6,11 @@
 
 人員が足りない日も「作成できません」とせず、配置できた分と不足を返す
 （現場では人員不足が構造的に起こるため、不足の可視化そのものが成果になる）。
-Phase 8では生成結果をDBへ保存しない（画面表示のみ）。
+
+必要な人数だけを配置したうえで、同じ条件なら希望休を出していないスタッフを
+優先し、各スタッフの目標勤務日数へ近づける。希望休の日に勤務したことや
+目標勤務日数からの差は制約違反ではないため、警告ではなくスタッフ別の一覧で示す。
+生成結果はDBへ保存しない（画面表示のみ）。
 """
 
 import pandas as pd
@@ -17,12 +21,15 @@ from src import services
 from src.generation_display import (
     REQUIREMENT_MISSING_LABEL,
     format_assignment_cell,
+    format_prefer_off_respect,
     format_required,
     format_role_shortages,
+    format_scheduled_days,
     format_shortage_summary,
     format_skill_shortage,
     format_staff_shortage,
     format_status,
+    format_target_days,
 )
 from src.period_utils import format_date_short, period_dates
 from src.requirement_display import count_defined, count_undefined
@@ -127,10 +134,11 @@ if not result.has_solution:
 # ---------------------------------------------------------------------------
 
 st.subheader("作成結果")
-result_summary = st.columns(3)
+result_summary = st.columns(4)
 result_summary[0].metric("総出勤日数", f"{result.total_workdays}日")
 result_summary[1].metric("不足の合計", result.total_shortage)
 result_summary[2].metric("不足のある日", len(result.shortage_days))
+result_summary[3].metric("希望休の尊重", format_prefer_off_respect(result))
 st.caption(f"計算時間 {result.solve_seconds:.2f} 秒（{result.solver_status}）")
 
 for day in result.shortage_days:
@@ -169,6 +177,31 @@ grid = pd.DataFrame(
     ]
 )
 st.dataframe(grid, width="stretch", hide_index=True)
+
+# ---------------------------------------------------------------------------
+# スタッフ別の勤務状況
+# ---------------------------------------------------------------------------
+
+st.subheader("スタッフ別の勤務状況")
+st.caption(
+    "「目安」は目標勤務日数/週を対象期間に換算した日数です。"
+    "必要人数を満たすために目安から離れることや、希望休の日に勤務することはあります"
+    "（いずれも条件違反ではありません）。"
+)
+
+staff_table = pd.DataFrame(
+    [
+        {
+            "スタッフ": summary.staff_name,
+            "実勤務": format_scheduled_days(summary),
+            "目安": format_target_days(summary),
+            "希望休": summary.prefer_off_requested_count,
+            "希望休出勤": summary.prefer_off_worked_count,
+        }
+        for summary in result.staff_summaries
+    ]
+)
+st.dataframe(staff_table, width="stretch", hide_index=True)
 
 # ---------------------------------------------------------------------------
 # 日別サマリー

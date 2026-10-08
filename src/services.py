@@ -471,6 +471,7 @@ def build_generation_request(
                 skill_level=detail.staff.skill_level,
                 day_conditions=conditions,
                 max_consecutive_days=detail.staff.max_consecutive_days,
+                target_days_per_week=detail.staff.target_days_per_week,
             )
         )
 
