@@ -7,6 +7,9 @@ from src.database import IncompatibleSchemaError, get_connection, initialize_dat
 EXPECTED_TABLES = {
     "roles",
     "staff",
+    "special_skills",
+    "staff_special_skills",
+    "staff_weekday_patterns",
     "daily_requirements",
     "daily_role_requirements",
     "attendance_imports",
@@ -93,6 +96,8 @@ def test_all_tables_created(conn):
 
 
 def test_staff_columns(conn):
+    # standard_* 以降はPhase 5で追加した通常勤務条件。
+    # 既存DBへはALTER TABLEで末尾に追加されるため、新規作成でも同じ順序になるようにしている
     assert _columns(conn, "staff") == [
         "staff_id",
         "employee_code",
@@ -101,6 +106,11 @@ def test_staff_columns(conn):
         "role_id",
         "skill_level",
         "active",
+        "standard_start_time",
+        "standard_end_time",
+        "target_days_per_week",
+        "max_days_per_period",
+        "max_consecutive_days",
     ]
 
 
@@ -400,3 +410,205 @@ def test_initialize_rejects_source_app_schema():
     # 既存の旧テーブルに手を加えていないこと
     assert "attendance_imports" not in _tables(conn)
     conn.close()
+
+
+# ---------------------------------------------------------------------------
+# 通常勤務条件（Phase 5）
+# ---------------------------------------------------------------------------
+
+
+def _set_standard_time(conn, start, end, employee_code="0001"):
+    with conn:
+        conn.execute(
+            "UPDATE staff SET standard_start_time = ?, standard_end_time = ? "
+            "WHERE employee_code = ?",
+            (start, end, employee_code),
+        )
+
+
+def test_standard_conditions_default_to_null(conn):
+    _insert_staff(conn)
+    row = conn.execute(
+        "SELECT standard_start_time, standard_end_time, target_days_per_week, "
+        "max_days_per_period, max_consecutive_days FROM staff"
+    ).fetchone()
+    assert tuple(row) == (None, None, None, None, None)
+
+
+def test_standard_time_accepts_hhmm(conn):
+    _insert_staff(conn)
+    _set_standard_time(conn, "09:00", "15:30")
+    row = conn.execute(
+        "SELECT standard_start_time, standard_end_time FROM staff"
+    ).fetchone()
+    assert tuple(row) == ("09:00", "15:30")
+
+
+def test_standard_time_allows_one_side_null(conn):
+    """片方のみの入力はDBでは許容し、入力検証（validate_staff）でエラーにする."""
+    _insert_staff(conn)
+    _set_standard_time(conn, "09:00", None)
+    _set_standard_time(conn, None, "15:30")
+
+
+@pytest.mark.parametrize("value", ["9:00", "0900", "24:00", "30:00", "09:60", "9時"])
+def test_standard_time_rejects_non_hhmm(conn, value):
+    _insert_staff(conn)
+    with pytest.raises(sqlite3.IntegrityError):
+        _set_standard_time(conn, value, None)
+
+
+@pytest.mark.parametrize(("start", "end"), [("09:00", "09:00"), ("15:00", "09:00")])
+def test_standard_time_requires_end_after_start(conn, start, end):
+    _insert_staff(conn)
+    with pytest.raises(sqlite3.IntegrityError):
+        _set_standard_time(conn, start, end)
+
+
+@pytest.mark.parametrize(
+    ("column", "value"),
+    [
+        ("target_days_per_week", 0),
+        ("target_days_per_week", 8),
+        ("max_days_per_period", 0),
+        ("max_days_per_period", -1),
+        ("max_consecutive_days", 0),
+        ("max_consecutive_days", -1),
+    ],
+)
+def test_work_volume_columns_reject_out_of_range(conn, column, value):
+    _insert_staff(conn)
+    with pytest.raises(sqlite3.IntegrityError):
+        with conn:
+            conn.execute(f"UPDATE staff SET {column} = ?", (value,))
+
+
+# ---------------------------------------------------------------------------
+# 特殊スキル
+# ---------------------------------------------------------------------------
+
+
+def test_initial_special_skill_seeded(conn):
+    rows = conn.execute(
+        "SELECT skill_code, skill_name, active FROM special_skills"
+    ).fetchall()
+    assert [(r["skill_code"], r["skill_name"], r["active"]) for r in rows] == [
+        ("HEAVY_WORK", "力仕事可", 1)
+    ]
+
+
+def test_special_skill_seed_is_idempotent(conn):
+    for _ in range(3):
+        initialize_database(conn)
+    count = conn.execute("SELECT COUNT(*) FROM special_skills").fetchone()[0]
+    assert count == 1
+
+
+def test_special_skill_seed_does_not_overwrite_edits(conn):
+    """運用側で名称を変えた場合に再初期化で戻らないこと."""
+    with conn:
+        conn.execute("UPDATE special_skills SET skill_name = '重量物対応' WHERE skill_code = 'HEAVY_WORK'")
+    initialize_database(conn)
+    name = conn.execute(
+        "SELECT skill_name FROM special_skills WHERE skill_code = 'HEAVY_WORK'"
+    ).fetchone()[0]
+    assert name == "重量物対応"
+
+
+def test_special_skill_code_and_name_unique(conn):
+    with pytest.raises(sqlite3.IntegrityError):
+        with conn:
+            conn.execute(
+                "INSERT INTO special_skills (skill_code, skill_name) VALUES ('HEAVY_WORK', '別名')"
+            )
+    with pytest.raises(sqlite3.IntegrityError):
+        with conn:
+            conn.execute(
+                "INSERT INTO special_skills (skill_code, skill_name) VALUES ('OTHER', '力仕事可')"
+            )
+
+
+@pytest.mark.parametrize("code", ["", "   "])
+def test_special_skill_code_required(conn, code):
+    with pytest.raises(sqlite3.IntegrityError):
+        with conn:
+            conn.execute(
+                "INSERT INTO special_skills (skill_code, skill_name) VALUES (?, 'x')", (code,)
+            )
+
+
+def test_staff_special_skills_foreign_keys(conn):
+    staff_id = _insert_staff(conn)
+    with pytest.raises(sqlite3.IntegrityError):
+        with conn:
+            conn.execute(
+                "INSERT INTO staff_special_skills (staff_id, special_skill_id) VALUES (?, 999)",
+                (staff_id,),
+            )
+    with pytest.raises(sqlite3.IntegrityError):
+        with conn:
+            conn.execute(
+                "INSERT INTO staff_special_skills (staff_id, special_skill_id) VALUES (999, 1)"
+            )
+
+
+def test_staff_special_skills_primary_key_prevents_duplicate(conn):
+    staff_id = _insert_staff(conn)
+    with conn:
+        conn.execute(
+            "INSERT INTO staff_special_skills (staff_id, special_skill_id) VALUES (?, 1)",
+            (staff_id,),
+        )
+    with pytest.raises(sqlite3.IntegrityError):
+        with conn:
+            conn.execute(
+                "INSERT INTO staff_special_skills (staff_id, special_skill_id) VALUES (?, 1)",
+                (staff_id,),
+            )
+
+
+# ---------------------------------------------------------------------------
+# 通常勤務曜日
+# ---------------------------------------------------------------------------
+
+
+def test_staff_weekday_patterns_columns(conn):
+    assert _columns(conn, "staff_weekday_patterns") == [
+        "staff_id",
+        "weekday",
+        "is_available",
+    ]
+
+
+@pytest.mark.parametrize("weekday", [-1, 7, 10])
+def test_weekday_range_enforced(conn, weekday):
+    staff_id = _insert_staff(conn)
+    with pytest.raises(sqlite3.IntegrityError):
+        with conn:
+            conn.execute(
+                "INSERT INTO staff_weekday_patterns (staff_id, weekday) VALUES (?, ?)",
+                (staff_id, weekday),
+            )
+
+
+def test_weekday_duplicate_rejected(conn):
+    staff_id = _insert_staff(conn)
+    with conn:
+        conn.execute(
+            "INSERT INTO staff_weekday_patterns (staff_id, weekday) VALUES (?, 0)", (staff_id,)
+        )
+    with pytest.raises(sqlite3.IntegrityError):
+        with conn:
+            conn.execute(
+                "INSERT INTO staff_weekday_patterns (staff_id, weekday) VALUES (?, 0)",
+                (staff_id,),
+            )
+
+
+def test_weekday_pattern_foreign_key(conn):
+    with pytest.raises(sqlite3.IntegrityError):
+        with conn:
+            conn.execute(
+                "INSERT INTO staff_weekday_patterns (staff_id, weekday) VALUES (999, 0)"
+            )
+

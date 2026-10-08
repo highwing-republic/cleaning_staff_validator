@@ -15,9 +15,12 @@ from src.models import (
     AttendanceShiftInput,
     ImportIssue,
     MonthlyValidationResult,
+    SpecialSkill,
     StaffInput,
+    ValidationError,
 )
 from src.staffing_validation import validate_month_staffing
+from src.validation import STAFF_SPECIAL_SKILL_NOT_FOUND, validate_staff
 
 # 照合 warning コード（取込は可能）
 UNMATCHED_STAFF = "ATTENDANCE_UNMATCHED_STAFF"
@@ -28,6 +31,74 @@ INACTIVE_STAFF = "ATTENDANCE_INACTIVE_STAFF"
 
 def get_role_names(conn: sqlite3.Connection) -> dict[int, str]:
     return {r["role_id"]: r["role_name"] for r in repo.list_roles(conn)}
+
+
+# ---------------------------------------------------------------------------
+# スタッフマスター（通常勤務条件・特殊スキル）
+# ---------------------------------------------------------------------------
+
+
+def list_special_skill_options(
+    conn: sqlite3.Connection,
+    assigned_ids: list[int] | tuple[int, ...] = (),
+) -> list[SpecialSkill]:
+    """特殊スキルの選択肢を表示順で返す.
+
+    無効（active=0）の特殊スキルは新規選択肢には出さない。ただし assigned_ids に
+    すでに付与済みのものが含まれる場合は、編集時に黙って外れないよう残す。
+    """
+    assigned = set(assigned_ids)
+    return [
+        skill
+        for skill in repo.list_special_skills(conn, include_inactive=True)
+        if skill.active or skill.special_skill_id in assigned
+    ]
+
+
+def get_special_skill_names(conn: sqlite3.Connection) -> dict[int, str]:
+    return {s.special_skill_id: s.skill_name for s in repo.list_special_skills(conn)}
+
+
+def validate_staff_master_input(
+    conn: sqlite3.Connection,
+    employee_code: str,
+    staff_name: str,
+    skill_level: int,
+    *,
+    standard_start_time: str | None = None,
+    standard_end_time: str | None = None,
+    target_days_per_week: int | None = None,
+    max_days_per_period: int | None = None,
+    max_consecutive_days: int | None = None,
+    weekdays: list[int] | tuple[int, ...] | None = None,
+    special_skill_ids: list[int] | tuple[int, ...] | None = None,
+) -> list[ValidationError]:
+    """スタッフ入力の検証（DBが必要な特殊スキルの存在確認を含む）."""
+    errors = validate_staff(
+        employee_code,
+        staff_name,
+        skill_level,
+        standard_start_time=standard_start_time,
+        standard_end_time=standard_end_time,
+        target_days_per_week=target_days_per_week,
+        max_days_per_period=max_days_per_period,
+        max_consecutive_days=max_consecutive_days,
+        weekdays=weekdays,
+        special_skill_ids=special_skill_ids,
+    )
+
+    if special_skill_ids:
+        known = {s.special_skill_id for s in repo.list_special_skills(conn)}
+        unknown = sorted(set(special_skill_ids) - known)
+        if unknown:
+            errors.append(
+                ValidationError(
+                    code=STAFF_SPECIAL_SKILL_NOT_FOUND,
+                    message="登録されていない特殊スキルが指定されています。",
+                    field_name="special_skill_ids",
+                )
+            )
+    return errors
 
 
 # ---------------------------------------------------------------------------

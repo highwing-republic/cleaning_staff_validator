@@ -5,12 +5,20 @@
 
 from datetime import date
 
-from src.constants import SKILL_LEVEL_MAX, SKILL_LEVEL_MIN
+from src.constants import (
+    SKILL_LEVEL_MAX,
+    SKILL_LEVEL_MIN,
+    TARGET_DAYS_PER_WEEK_MAX,
+    TARGET_DAYS_PER_WEEK_MIN,
+    WEEKDAY_MAX,
+    WEEKDAY_MIN,
+)
 from src.models import (
     DailyRequirementInput,
     RoleRequirementInput,
     ValidationError,
 )
+from src.work_time import parse_hhmm
 
 # ---------------------------------------------------------------------------
 # エラーコード（Staff）
@@ -19,6 +27,17 @@ from src.models import (
 STAFF_EMPLOYEE_CODE_REQUIRED = "STAFF_EMPLOYEE_CODE_REQUIRED"
 STAFF_NAME_REQUIRED = "STAFF_NAME_REQUIRED"
 STAFF_SKILL_LEVEL_INVALID = "STAFF_SKILL_LEVEL_INVALID"
+# 通常勤務条件（Phase 5）
+STAFF_STANDARD_TIME_INVALID = "STAFF_STANDARD_TIME_INVALID"
+STAFF_STANDARD_TIME_INCOMPLETE = "STAFF_STANDARD_TIME_INCOMPLETE"
+STAFF_STANDARD_TIME_ORDER_INVALID = "STAFF_STANDARD_TIME_ORDER_INVALID"
+STAFF_TARGET_DAYS_PER_WEEK_INVALID = "STAFF_TARGET_DAYS_PER_WEEK_INVALID"
+STAFF_MAX_DAYS_PER_PERIOD_INVALID = "STAFF_MAX_DAYS_PER_PERIOD_INVALID"
+STAFF_MAX_CONSECUTIVE_DAYS_INVALID = "STAFF_MAX_CONSECUTIVE_DAYS_INVALID"
+STAFF_WEEKDAY_INVALID = "STAFF_WEEKDAY_INVALID"
+STAFF_WEEKDAY_DUPLICATED = "STAFF_WEEKDAY_DUPLICATED"
+STAFF_SPECIAL_SKILL_DUPLICATED = "STAFF_SPECIAL_SKILL_DUPLICATED"
+STAFF_SPECIAL_SKILL_NOT_FOUND = "STAFF_SPECIAL_SKILL_NOT_FOUND"
 
 # エラーコード（Requirement）
 REQUIREMENT_WORK_DATE_INVALID = "REQUIREMENT_WORK_DATE_INVALID"
@@ -66,10 +85,20 @@ def validate_staff(
     employee_code: str,
     staff_name: str,
     skill_level: int,
+    *,
+    standard_start_time: str | None = None,
+    standard_end_time: str | None = None,
+    target_days_per_week: int | None = None,
+    max_days_per_period: int | None = None,
+    max_consecutive_days: int | None = None,
+    weekdays: list[int] | tuple[int, ...] | None = None,
+    special_skill_ids: list[int] | tuple[int, ...] | None = None,
 ) -> list[ValidationError]:
     """スタッフ入力の検証.
 
     employee_code は文字列で保持する（数値型は受け付けない。先頭0等を保つため）。
+    通常勤務条件（standard_* 以降）は任意項目で、未入力（None・空文字）はエラーにしない。
+    特殊スキルIDの存在確認はDBが必要なため services 側で行う。
     """
     errors: list[ValidationError] = []
 
@@ -103,7 +132,159 @@ def validate_staff(
             )
         )
 
+    errors += _validate_standard_work_time(standard_start_time, standard_end_time)
+    errors += _validate_optional_positive_int(
+        target_days_per_week,
+        code=STAFF_TARGET_DAYS_PER_WEEK_INVALID,
+        field_name="target_days_per_week",
+        message=(
+            f"目標勤務日数/週は{TARGET_DAYS_PER_WEEK_MIN}〜{TARGET_DAYS_PER_WEEK_MAX}"
+            "で入力してください。"
+        ),
+        minimum=TARGET_DAYS_PER_WEEK_MIN,
+        maximum=TARGET_DAYS_PER_WEEK_MAX,
+    )
+    errors += _validate_optional_positive_int(
+        max_days_per_period,
+        code=STAFF_MAX_DAYS_PER_PERIOD_INVALID,
+        field_name="max_days_per_period",
+        message="期間内最大勤務日数は1以上の整数で入力してください。",
+    )
+    errors += _validate_optional_positive_int(
+        max_consecutive_days,
+        code=STAFF_MAX_CONSECUTIVE_DAYS_INVALID,
+        field_name="max_consecutive_days",
+        message="最大連続勤務日数は1以上の整数で入力してください。",
+    )
+    errors += _validate_weekdays(weekdays)
+    errors += _validate_special_skill_ids(special_skill_ids)
+
     return errors
+
+
+def _is_blank(value: object) -> bool:
+    """未入力（None または空白のみの文字列）か."""
+    if value is None:
+        return True
+    return isinstance(value, str) and not value.strip()
+
+
+def _validate_standard_work_time(
+    start_time: object, end_time: object
+) -> list[ValidationError]:
+    """通常勤務時刻の検証.
+
+    両方未入力なら条件なし（エラーにしない）。片方だけの入力はエラー
+    （勤務可能時間を計算できず、Solverで扱えないため）。
+    """
+    errors: list[ValidationError] = []
+    start_blank, end_blank = _is_blank(start_time), _is_blank(end_time)
+
+    if start_blank and end_blank:
+        return errors
+
+    if start_blank or end_blank:
+        errors.append(
+            ValidationError(
+                code=STAFF_STANDARD_TIME_INCOMPLETE,
+                message="通常勤務時間は開始・終了の両方を入力してください。",
+                field_name="standard_end_time" if end_blank else "standard_start_time",
+            )
+        )
+
+    start = None if start_blank else parse_hhmm(start_time)
+    end = None if end_blank else parse_hhmm(end_time)
+
+    for value, blank, field_name in (
+        (start, start_blank, "standard_start_time"),
+        (end, end_blank, "standard_end_time"),
+    ):
+        if not blank and value is None:
+            errors.append(
+                ValidationError(
+                    code=STAFF_STANDARD_TIME_INVALID,
+                    message="通常勤務時間は HH:MM（00:00〜23:59）で入力してください。",
+                    field_name=field_name,
+                )
+            )
+
+    if start is not None and end is not None and end <= start:
+        errors.append(
+            ValidationError(
+                code=STAFF_STANDARD_TIME_ORDER_INVALID,
+                message="通常勤務の終了時刻は開始時刻より後にしてください。",
+                field_name="standard_end_time",
+            )
+        )
+
+    return errors
+
+
+def _validate_optional_positive_int(
+    value: object,
+    *,
+    code: str,
+    field_name: str,
+    message: str,
+    minimum: int = 1,
+    maximum: int | None = None,
+) -> list[ValidationError]:
+    """任意の正整数項目の検証. 未入力（None・空文字）はエラーにしない."""
+    if _is_blank(value):
+        return []
+    if not _is_valid_int(value) or value < minimum or (maximum is not None and value > maximum):
+        return [ValidationError(code=code, message=message, field_name=field_name)]
+    return []
+
+
+def _validate_weekdays(
+    weekdays: list[int] | tuple[int, ...] | None,
+) -> list[ValidationError]:
+    """通常勤務曜日の検証. 曜日なし（空）も許容する（登録直後で未設定の場合があるため）."""
+    if weekdays is None:
+        return []
+
+    errors: list[ValidationError] = []
+    seen: set[int] = set()
+    duplicated = False
+    for weekday in weekdays:
+        if not _is_valid_int(weekday) or not WEEKDAY_MIN <= weekday <= WEEKDAY_MAX:
+            errors.append(
+                ValidationError(
+                    code=STAFF_WEEKDAY_INVALID,
+                    message="通常勤務曜日の指定が不正です。",
+                    field_name="weekdays",
+                )
+            )
+            continue
+        if weekday in seen and not duplicated:
+            duplicated = True
+            errors.append(
+                ValidationError(
+                    code=STAFF_WEEKDAY_DUPLICATED,
+                    message="通常勤務曜日が重複しています。",
+                    field_name="weekdays",
+                )
+            )
+        seen.add(weekday)
+    return errors
+
+
+def _validate_special_skill_ids(
+    special_skill_ids: list[int] | tuple[int, ...] | None,
+) -> list[ValidationError]:
+    """特殊スキルIDの重複検証（存在確認は services 側で行う）."""
+    if special_skill_ids is None:
+        return []
+    if len(set(special_skill_ids)) != len(list(special_skill_ids)):
+        return [
+            ValidationError(
+                code=STAFF_SPECIAL_SKILL_DUPLICATED,
+                message="同じ特殊スキルが重複して指定されています。",
+                field_name="special_skill_ids",
+            )
+        ]
+    return []
 
 
 # ---------------------------------------------------------------------------

@@ -9,8 +9,17 @@ from src.validation import (
     REQUIREMENT_SKILL_LEVEL_INVALID,
     REQUIREMENT_SKILL_LEVEL_REQUIRED,
     STAFF_EMPLOYEE_CODE_REQUIRED,
+    STAFF_MAX_CONSECUTIVE_DAYS_INVALID,
+    STAFF_MAX_DAYS_PER_PERIOD_INVALID,
     STAFF_NAME_REQUIRED,
     STAFF_SKILL_LEVEL_INVALID,
+    STAFF_SPECIAL_SKILL_DUPLICATED,
+    STAFF_STANDARD_TIME_INCOMPLETE,
+    STAFF_STANDARD_TIME_INVALID,
+    STAFF_STANDARD_TIME_ORDER_INVALID,
+    STAFF_TARGET_DAYS_PER_WEEK_INVALID,
+    STAFF_WEEKDAY_DUPLICATED,
+    STAFF_WEEKDAY_INVALID,
     validate_daily_requirement,
     validate_staff,
 )
@@ -176,3 +185,126 @@ class TestValidateSkillRequirement:
             work_date="2026-10-01", required_total_staff=5, required_skill_count=2,
         )
         assert _codes(validate_daily_requirement(req, [])) == [REQUIREMENT_SKILL_LEVEL_REQUIRED]
+
+
+# ---------------------------------------------------------------------------
+# validate_staff: 通常勤務条件（Phase 5）
+# ---------------------------------------------------------------------------
+
+
+def _staff_codes(**kwargs):
+    return _codes(validate_staff("0001", "山田", 3, **kwargs))
+
+
+class TestValidateStandardWorkTime:
+    @pytest.mark.parametrize(
+        ("start", "end"),
+        [(None, None), ("", ""), ("   ", None), (None, "  ")],
+    )
+    def test_unset_is_allowed(self, start, end):
+        """通常勤務時間は任意項目（登録直後で未設定の場合があるため）."""
+        assert _staff_codes(standard_start_time=start, standard_end_time=end) == []
+
+    @pytest.mark.parametrize(
+        ("start", "end"),
+        [("09:00", "15:30"), ("9:00", "13:00"), ("00:00", "23:59")],
+    )
+    def test_valid_pairs(self, start, end):
+        assert _staff_codes(standard_start_time=start, standard_end_time=end) == []
+
+    def test_start_only_is_error(self):
+        assert STAFF_STANDARD_TIME_INCOMPLETE in _staff_codes(standard_start_time="09:00")
+
+    def test_end_only_is_error(self):
+        assert STAFF_STANDARD_TIME_INCOMPLETE in _staff_codes(standard_end_time="15:30")
+
+    @pytest.mark.parametrize(("start", "end"), [("09:00", "09:00"), ("15:00", "09:00")])
+    def test_end_must_be_after_start(self, start, end):
+        codes = _staff_codes(standard_start_time=start, standard_end_time=end)
+        assert STAFF_STANDARD_TIME_ORDER_INVALID in codes
+
+    @pytest.mark.parametrize("value", ["24:00", "30:00", "09:60", "0900", "9時"])
+    def test_invalid_format_is_error(self, value):
+        """勤怠CSVの翌日跨ぎ（30:00等）は通常勤務マスターでは受け付けない."""
+        codes = _staff_codes(standard_start_time=value, standard_end_time="15:30")
+        assert STAFF_STANDARD_TIME_INVALID in codes
+
+    def test_order_not_reported_when_format_invalid(self):
+        codes = _staff_codes(standard_start_time="9時", standard_end_time="15:30")
+        assert STAFF_STANDARD_TIME_ORDER_INVALID not in codes
+
+
+class TestValidateWorkVolume:
+    @pytest.mark.parametrize("value", [1, 3, 4, 5, 7])
+    def test_target_days_valid(self, value):
+        assert _staff_codes(target_days_per_week=value) == []
+
+    @pytest.mark.parametrize("value", [0, 8, -1, 3.5, "4", True])
+    def test_target_days_invalid(self, value):
+        assert STAFF_TARGET_DAYS_PER_WEEK_INVALID in _staff_codes(target_days_per_week=value)
+
+    def test_target_days_unset_is_allowed(self):
+        assert _staff_codes(target_days_per_week=None) == []
+
+    @pytest.mark.parametrize("value", [0, -1, 2.5, "3"])
+    def test_max_days_per_period_invalid(self, value):
+        assert STAFF_MAX_DAYS_PER_PERIOD_INVALID in _staff_codes(max_days_per_period=value)
+
+    @pytest.mark.parametrize("value", [1, 10, 14, 30])
+    def test_max_days_per_period_valid(self, value):
+        assert _staff_codes(max_days_per_period=value) == []
+
+    @pytest.mark.parametrize("value", [0, -1, 1.5])
+    def test_max_consecutive_days_invalid(self, value):
+        assert STAFF_MAX_CONSECUTIVE_DAYS_INVALID in _staff_codes(max_consecutive_days=value)
+
+    @pytest.mark.parametrize("value", [1, 5, 6, None])
+    def test_max_consecutive_days_valid(self, value):
+        assert _staff_codes(max_consecutive_days=value) == []
+
+
+class TestValidateWeekdays:
+    @pytest.mark.parametrize("weekdays", [None, [], [0], [0, 1, 3, 4, 5], [0, 1, 2, 3, 4, 5, 6]])
+    def test_valid(self, weekdays):
+        """曜日なしも許容する（新規登録直後で勤務条件未設定の場合があるため）."""
+        assert _staff_codes(weekdays=weekdays) == []
+
+    @pytest.mark.parametrize("weekdays", [[-1], [7], [0, 10], ["月"], [None], [True]])
+    def test_out_of_range_is_error(self, weekdays):
+        assert STAFF_WEEKDAY_INVALID in _staff_codes(weekdays=weekdays)
+
+    def test_duplicate_is_error(self):
+        assert STAFF_WEEKDAY_DUPLICATED in _staff_codes(weekdays=[0, 1, 1])
+
+    def test_duplicate_reported_once(self):
+        codes = _staff_codes(weekdays=[0, 0, 1, 1])
+        assert codes.count(STAFF_WEEKDAY_DUPLICATED) == 1
+
+
+class TestValidateSpecialSkillIds:
+    @pytest.mark.parametrize("ids", [None, [], [1], [1, 2]])
+    def test_valid(self, ids):
+        assert _staff_codes(special_skill_ids=ids) == []
+
+    def test_duplicate_is_error(self):
+        assert STAFF_SPECIAL_SKILL_DUPLICATED in _staff_codes(special_skill_ids=[1, 1])
+
+
+def test_standard_conditions_do_not_affect_base_validation():
+    """通常勤務条件を渡しても既存の必須項目チェックは変わらない."""
+    codes = set(
+        _codes(
+            validate_staff(
+                "", "", 0,
+                standard_start_time="09:00",
+                standard_end_time="15:30",
+                target_days_per_week=4,
+            )
+        )
+    )
+    assert codes == {
+        STAFF_EMPLOYEE_CODE_REQUIRED,
+        STAFF_NAME_REQUIRED,
+        STAFF_SKILL_LEVEL_INVALID,
+    }
+

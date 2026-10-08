@@ -18,9 +18,12 @@ from src.models import (
     AttendanceShiftInput,
     DailyRequirementInput,
     RoleRequirementInput,
+    SpecialSkill,
+    StaffDetail,
     StaffInput,
 )
 from src.month_utils import get_month_dates
+from src.work_time import normalize_hhmm
 
 
 # ---------------------------------------------------------------------------
@@ -44,6 +47,11 @@ def _row_to_staff_input(row: sqlite3.Row) -> StaffInput:
         skill_level=row["skill_level"],
         department=row["department"],
         active=bool(row["active"]),
+        standard_start_time=row["standard_start_time"],
+        standard_end_time=row["standard_end_time"],
+        target_days_per_week=row["target_days_per_week"],
+        max_days_per_period=row["max_days_per_period"],
+        max_consecutive_days=row["max_consecutive_days"],
     )
 
 
@@ -78,6 +86,16 @@ def get_staff_by_employee_code(
     return _row_to_staff_input(row)
 
 
+def _optional_time(value: str | None) -> str | None:
+    """通常勤務時刻を 'HH:MM'（0埋め）へ正規化する. 未入力はNone.
+
+    形式が不正な値はそのまま渡してDBのCHECKで弾く（黙って捨てない）。
+    """
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    return normalize_hhmm(value) or value
+
+
 def create_staff(
     conn: sqlite3.Connection,
     employee_code: str,
@@ -85,15 +103,43 @@ def create_staff(
     role_id: int,
     skill_level: int = SKILL_LEVEL_DEFAULT,
     department: str | None = None,
+    *,
+    standard_start_time: str | None = None,
+    standard_end_time: str | None = None,
+    target_days_per_week: int | None = None,
+    max_days_per_period: int | None = None,
+    max_consecutive_days: int | None = None,
+    weekdays: list[int] | tuple[int, ...] | None = None,
+    special_skill_ids: list[int] | tuple[int, ...] | None = None,
 ) -> int:
-    """スタッフを作成する. employee_code 重複時は sqlite3.IntegrityError."""
+    """スタッフを作成する. employee_code 重複時は sqlite3.IntegrityError.
+
+    staff・通常勤務曜日・特殊スキルを1トランザクションで保存する
+    （途中で失敗した場合はスタッフ本体も作られない）。
+    """
     with conn:
         cur = conn.execute(
-            "INSERT INTO staff (employee_code, staff_name, department, role_id, skill_level) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (employee_code, staff_name, department, role_id, skill_level),
+            "INSERT INTO staff (employee_code, staff_name, department, role_id, skill_level, "
+            "standard_start_time, standard_end_time, target_days_per_week, "
+            "max_days_per_period, max_consecutive_days) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                employee_code,
+                staff_name,
+                department,
+                role_id,
+                skill_level,
+                _optional_time(standard_start_time),
+                _optional_time(standard_end_time),
+                target_days_per_week,
+                max_days_per_period,
+                max_consecutive_days,
+            ),
         )
-    return cur.lastrowid
+        staff_id = cur.lastrowid
+        _replace_staff_weekdays(conn, staff_id, weekdays)
+        _replace_staff_special_skills(conn, staff_id, special_skill_ids)
+    return staff_id
 
 
 def update_staff(
@@ -105,24 +151,172 @@ def update_staff(
     role_id: int,
     skill_level: int,
     department: str | None = None,
+    standard_start_time: str | None = None,
+    standard_end_time: str | None = None,
+    target_days_per_week: int | None = None,
+    max_days_per_period: int | None = None,
+    max_consecutive_days: int | None = None,
+    weekdays: list[int] | tuple[int, ...] | None = None,
+    special_skill_ids: list[int] | tuple[int, ...] | None = None,
 ) -> None:
+    """スタッフを更新する.
+
+    weekdays / special_skill_ids は None のとき変更しない（渡された場合は全置換）。
+    staff本体と関連テーブルを1トランザクションで更新するため、部分更新は起きない。
+    """
     with conn:
         cur = conn.execute(
             "UPDATE staff SET employee_code = ?, staff_name = ?, department = ?, "
-            "role_id = ?, skill_level = ? WHERE staff_id = ?",
-            (employee_code, staff_name, department, role_id, skill_level, staff_id),
+            "role_id = ?, skill_level = ?, standard_start_time = ?, standard_end_time = ?, "
+            "target_days_per_week = ?, max_days_per_period = ?, max_consecutive_days = ? "
+            "WHERE staff_id = ?",
+            (
+                employee_code,
+                staff_name,
+                department,
+                role_id,
+                skill_level,
+                _optional_time(standard_start_time),
+                _optional_time(standard_end_time),
+                target_days_per_week,
+                max_days_per_period,
+                max_consecutive_days,
+                staff_id,
+            ),
         )
         if cur.rowcount == 0:
             raise ValueError(f"staff not found: {staff_id!r}")
+        _replace_staff_weekdays(conn, staff_id, weekdays)
+        _replace_staff_special_skills(conn, staff_id, special_skill_ids)
 
 
 def deactivate_staff(conn: sqlite3.Connection, staff_id: int) -> None:
+    """無効化（物理削除はしない）. 通常勤務曜日・特殊スキルの割当はそのまま残す."""
     with conn:
         cur = conn.execute(
             "UPDATE staff SET active = 0 WHERE staff_id = ?", (staff_id,)
         )
         if cur.rowcount == 0:
             raise ValueError(f"staff not found: {staff_id!r}")
+
+
+# ---------------------------------------------------------------------------
+# 通常勤務曜日 / 特殊スキル
+# ---------------------------------------------------------------------------
+
+
+def _replace_staff_weekdays(
+    conn: sqlite3.Connection,
+    staff_id: int,
+    weekdays: list[int] | tuple[int, ...] | None,
+) -> None:
+    """通常勤務曜日を全置換する（Noneなら変更しない）. 呼び出し側のトランザクション内で使う."""
+    if weekdays is None:
+        return
+    conn.execute("DELETE FROM staff_weekday_patterns WHERE staff_id = ?", (staff_id,))
+    conn.executemany(
+        "INSERT INTO staff_weekday_patterns (staff_id, weekday, is_available) VALUES (?, ?, 1)",
+        [(staff_id, int(weekday)) for weekday in sorted(set(weekdays))],
+    )
+
+
+def _replace_staff_special_skills(
+    conn: sqlite3.Connection,
+    staff_id: int,
+    special_skill_ids: list[int] | tuple[int, ...] | None,
+) -> None:
+    """特殊スキルの割当を全置換する（Noneなら変更しない）. 呼び出し側のトランザクション内で使う."""
+    if special_skill_ids is None:
+        return
+    conn.execute("DELETE FROM staff_special_skills WHERE staff_id = ?", (staff_id,))
+    conn.executemany(
+        "INSERT INTO staff_special_skills (staff_id, special_skill_id) VALUES (?, ?)",
+        [(staff_id, int(skill_id)) for skill_id in sorted(set(special_skill_ids))],
+    )
+
+
+def get_staff_weekdays(conn: sqlite3.Connection, staff_id: int) -> tuple[int, ...]:
+    """通常勤務する曜日（0=月〜6=日）を昇順で返す."""
+    rows = conn.execute(
+        "SELECT weekday FROM staff_weekday_patterns "
+        "WHERE staff_id = ? AND is_available = 1 ORDER BY weekday",
+        (staff_id,),
+    ).fetchall()
+    return tuple(row["weekday"] for row in rows)
+
+
+def get_staff_special_skill_ids(conn: sqlite3.Connection, staff_id: int) -> tuple[int, ...]:
+    rows = conn.execute(
+        "SELECT special_skill_id FROM staff_special_skills WHERE staff_id = ? "
+        "ORDER BY special_skill_id",
+        (staff_id,),
+    ).fetchall()
+    return tuple(row["special_skill_id"] for row in rows)
+
+
+def _row_to_special_skill(row: sqlite3.Row) -> SpecialSkill:
+    return SpecialSkill(
+        special_skill_id=row["special_skill_id"],
+        skill_code=row["skill_code"],
+        skill_name=row["skill_name"],
+        active=bool(row["active"]),
+        display_order=row["display_order"],
+    )
+
+
+def list_special_skills(
+    conn: sqlite3.Connection, include_inactive: bool = True
+) -> list[SpecialSkill]:
+    """特殊スキルのマスターを表示順で返す."""
+    sql = "SELECT * FROM special_skills"
+    if not include_inactive:
+        sql += " WHERE active = 1"
+    sql += " ORDER BY display_order, special_skill_id"
+    return [_row_to_special_skill(row) for row in conn.execute(sql).fetchall()]
+
+
+def get_staff_detail(conn: sqlite3.Connection, staff_id: int) -> StaffDetail | None:
+    """スタッフ1名の通常勤務条件（曜日・特殊スキル込み）を取得する."""
+    staff = get_staff(conn, staff_id)
+    if staff is None:
+        return None
+    return StaffDetail(
+        staff=staff,
+        weekdays=get_staff_weekdays(conn, staff_id),
+        special_skill_ids=get_staff_special_skill_ids(conn, staff_id),
+    )
+
+
+def list_staff_details(
+    conn: sqlite3.Connection, include_inactive: bool = True
+) -> list[StaffDetail]:
+    """一覧表示用. 曜日・特殊スキルは全件まとめて取得する（1名ずつ問い合わせない）."""
+    staff_list = list_staff(conn, include_inactive=include_inactive)
+    if not staff_list:
+        return []
+
+    weekdays: dict[int, list[int]] = {}
+    for row in conn.execute(
+        "SELECT staff_id, weekday FROM staff_weekday_patterns "
+        "WHERE is_available = 1 ORDER BY staff_id, weekday"
+    ):
+        weekdays.setdefault(row["staff_id"], []).append(row["weekday"])
+
+    skills: dict[int, list[int]] = {}
+    for row in conn.execute(
+        "SELECT staff_id, special_skill_id FROM staff_special_skills "
+        "ORDER BY staff_id, special_skill_id"
+    ):
+        skills.setdefault(row["staff_id"], []).append(row["special_skill_id"])
+
+    return [
+        StaffDetail(
+            staff=staff,
+            weekdays=tuple(weekdays.get(staff.staff_id, ())),
+            special_skill_ids=tuple(skills.get(staff.staff_id, ())),
+        )
+        for staff in staff_list
+    ]
 
 
 # ---------------------------------------------------------------------------

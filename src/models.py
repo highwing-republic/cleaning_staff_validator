@@ -17,7 +17,14 @@ from src.constants import (
 
 @dataclass(frozen=True)
 class StaffInput:
-    """スタッフマスター. 勤怠CSVとの照合キーは employee_code（文字列）."""
+    """スタッフマスター. 勤怠CSVとの照合キーは employee_code（文字列）.
+
+    standard_* 以降は「普段どう働く人か」（通常勤務条件）。その日だけの早上がり・遅出は
+    ここには持たず、期間ごとの勤務希望として扱う。
+    通常勤務曜日と特殊スキルは別テーブルなのでこの型には持たせない（StaffDetail を使う）。
+    standard_work_minutes も保持しない（work_time.standard_work_minutes で計算する）。
+    未設定はNone。不明な条件を既定値で埋めない（誤った条件でシフトを組まないため）。
+    """
 
     staff_id: int
     employee_code: str
@@ -27,6 +34,41 @@ class StaffInput:
     skill_level: int = SKILL_LEVEL_DEFAULT
     department: str | None = None
     active: bool = True
+    # 通常勤務時刻 'HH:MM'（00:00〜23:59, 翌日跨ぎなし）
+    standard_start_time: str | None = None
+    standard_end_time: str | None = None
+    # 週に何日程度勤務したいか（将来Solverのsoft constraintで使う。None=目標なし）
+    target_days_per_week: int | None = None
+    # 期間内の最大勤務日数（将来用の欄。Phase 5では判定に使わない）
+    max_days_per_period: int | None = None
+    max_consecutive_days: int | None = None
+
+
+@dataclass(frozen=True)
+class SpecialSkill:
+    """特殊スキルのマスター（例 HEAVY_WORK / 力仕事可）.
+
+    総合スキル(skill_level)とは別概念で、できる作業の種類を表す。
+    """
+
+    special_skill_id: int
+    skill_code: str
+    skill_name: str
+    active: bool = True
+    display_order: int = 0
+
+
+@dataclass(frozen=True)
+class StaffDetail:
+    """スタッフ1名の通常勤務条件をまとめた型（画面・保存で使う）.
+
+    weekdays は通常勤務する曜日（0=月〜6=日）の昇順。未設定なら空。
+    special_skill_ids は付与済み特殊スキルのID昇順。
+    """
+
+    staff: StaffInput
+    weekdays: tuple[int, ...] = ()
+    special_skill_ids: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)

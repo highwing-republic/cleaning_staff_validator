@@ -28,8 +28,40 @@ def test_staff_input_defaults():
 
 
 def test_staff_input_has_no_generation_fields():
+    """StaffInputに持たせないもの.
+
+    - daily_work_minutes / standard_work_minutes: 開始・終了から計算する（二重保持しない）
+    - weekday_availability: 通常勤務曜日は staff_weekday_patterns（別テーブル）で持つ
+    - special_skill_ids: 特殊スキルは多対多なので StaffDetail 側で扱う
+    max_consecutive_days はPhase 5でスタッフ個別の通常勤務条件として持つ。
+    """
     names = {f.name for f in dataclasses.fields(StaffInput)}
-    assert not names & {"daily_work_minutes", "max_consecutive_days", "weekday_availability"}
+    assert not names & {
+        "daily_work_minutes",
+        "standard_work_minutes",
+        "weekday_availability",
+        "special_skill_ids",
+    }
+
+
+def test_staff_input_has_standard_work_conditions():
+    names = {f.name for f in dataclasses.fields(StaffInput)}
+    assert {
+        "standard_start_time",
+        "standard_end_time",
+        "target_days_per_week",
+        "max_days_per_period",
+        "max_consecutive_days",
+    } <= names
+
+
+def test_staff_input_standard_conditions_default_to_none():
+    s = _staff()
+    assert s.standard_start_time is None
+    assert s.standard_end_time is None
+    assert s.target_days_per_week is None
+    assert s.max_days_per_period is None
+    assert s.max_consecutive_days is None
 
 
 def test_inputs_are_frozen():

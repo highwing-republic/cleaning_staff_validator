@@ -6,14 +6,66 @@ from pathlib import Path
 from src.constants import (
     IMPORT_STATUS_ACTIVE,
     IMPORT_STATUSES,
+    INITIAL_SPECIAL_SKILLS,
     SHIFT_TYPE_TIME_RANGE,
     SHIFT_TYPES,
     SKILL_LEVEL_DEFAULT,
     SKILL_LEVEL_MAX,
     SKILL_LEVEL_MIN,
+    STANDARD_TIME_HOUR_MAX,
+    TARGET_DAYS_PER_WEEK_MAX,
+    TARGET_DAYS_PER_WEEK_MIN,
+    WEEKDAY_MAX,
+    WEEKDAY_MIN,
 )
 
 DEFAULT_DB_PATH = Path(__file__).resolve().parent.parent / "data" / "app.db"
+
+# Phase 5 で staff に追加した列（通常勤務条件）.
+# 既存DBへは ALTER TABLE で後から追加するため、CREATE TABLE の末尾と同じ順・同じ定義にして
+# 新規作成DBと移行後DBの列構成が一致するようにしている。
+def _hhmm_check(column: str) -> str:
+    """'HH:MM'（00:00〜23:59, 0埋め）だけを受け付けるCHECK式.
+
+    GLOB だけでは 24:00〜29:59 を通してしまうため時の値も見る。
+    0埋めを強制することで、終了>開始 の比較を文字列比較で正しく行える。
+    """
+    return (
+        f"{column} GLOB '[0-2][0-9]:[0-5][0-9]' "
+        f"AND CAST(substr({column}, 1, 2) AS INTEGER) <= {STANDARD_TIME_HOUR_MAX}"
+    )
+
+
+STAFF_ADDED_COLUMNS: tuple[tuple[str, str], ...] = (
+    (
+        "standard_start_time",
+        "standard_start_time TEXT NULL "
+        f"CHECK (standard_start_time IS NULL OR ({_hhmm_check('standard_start_time')}))",
+    ),
+    (
+        # 終了>開始 を列レベルCHECKに入れておくことで、ALTER TABLE で移行した既存DBでも
+        # 新規作成DBと同じ制約が効く（テーブルレベルCHECKはALTERで追加できない）
+        "standard_end_time",
+        "standard_end_time TEXT NULL "
+        f"CHECK (standard_end_time IS NULL OR ({_hhmm_check('standard_end_time')} "
+        "AND (standard_start_time IS NULL OR standard_end_time > standard_start_time)))",
+    ),
+    (
+        "target_days_per_week",
+        "target_days_per_week INTEGER NULL CHECK (target_days_per_week IS NULL OR "
+        f"target_days_per_week BETWEEN {TARGET_DAYS_PER_WEEK_MIN} AND {TARGET_DAYS_PER_WEEK_MAX})",
+    ),
+    (
+        "max_days_per_period",
+        "max_days_per_period INTEGER NULL "
+        "CHECK (max_days_per_period IS NULL OR max_days_per_period > 0)",
+    ),
+    (
+        "max_consecutive_days",
+        "max_consecutive_days INTEGER NULL "
+        "CHECK (max_consecutive_days IS NULL OR max_consecutive_days > 0)",
+    ),
+)
 
 
 class IncompatibleSchemaError(RuntimeError):
@@ -44,11 +96,12 @@ def get_connection(db_path: str | Path | None = None) -> sqlite3.Connection:
 
 
 def initialize_database(conn: sqlite3.Connection) -> None:
-    """全テーブルを作成し、rolesの初期値を投入する（冪等）."""
+    """全テーブルを作成し、roles・special_skillsの初期値を投入する（冪等）."""
     _ensure_compatible_schema(conn)
 
     shift_types = _sql_list(SHIFT_TYPES)
     import_statuses = _sql_list(IMPORT_STATUSES)
+    staff_added_columns = ",\n                ".join(ddl for _, ddl in STAFF_ADDED_COLUMNS)
 
     with conn:
         conn.execute(
@@ -62,7 +115,9 @@ def initialize_database(conn: sqlite3.Connection) -> None:
             """
         )
 
-        # employee_code は勤怠CSVの従業員番号。先頭0等を保つため必ずTEXTで保持する
+        # employee_code は勤怠CSVの従業員番号。先頭0等を保つため必ずTEXTで保持する。
+        # standard_* 以降は通常勤務条件（Phase 5）。その日だけの変更は保持しない（勤務希望で扱う）。
+        # standard_work_minutes は保存せず work_time.standard_work_minutes で計算する。
         conn.execute(
             f"""
             CREATE TABLE IF NOT EXISTS staff (
@@ -74,7 +129,49 @@ def initialize_database(conn: sqlite3.Connection) -> None:
                 skill_level INTEGER NOT NULL DEFAULT {SKILL_LEVEL_DEFAULT}
                     CHECK (skill_level BETWEEN {SKILL_LEVEL_MIN} AND {SKILL_LEVEL_MAX}),
                 active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+                {staff_added_columns},
                 FOREIGN KEY (role_id) REFERENCES roles (role_id)
+            )
+            """
+        )
+        _migrate_staff_columns(conn)
+
+        # 総合スキル(staff.skill_level)とは別概念。「力仕事可」等をstaffの列にせず多対多で持つ
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS special_skills (
+                special_skill_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                skill_code TEXT UNIQUE NOT NULL CHECK (length(trim(skill_code)) > 0),
+                skill_name TEXT UNIQUE NOT NULL CHECK (length(trim(skill_name)) > 0),
+                active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+                display_order INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS staff_special_skills (
+                staff_id INTEGER NOT NULL,
+                special_skill_id INTEGER NOT NULL,
+                PRIMARY KEY (staff_id, special_skill_id),
+                FOREIGN KEY (staff_id) REFERENCES staff (staff_id),
+                FOREIGN KEY (special_skill_id) REFERENCES special_skills (special_skill_id)
+            )
+            """
+        )
+
+        # 通常勤務曜日。曜日をstaffの文字列1列に持たせない（Solverで扱えるよう行で持つ）。
+        # Phase 5では曜日別の勤務時刻は持たず、勤務時刻は staff.standard_* を使う
+        conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS staff_weekday_patterns (
+                staff_id INTEGER NOT NULL,
+                weekday INTEGER NOT NULL
+                    CHECK (weekday BETWEEN {WEEKDAY_MIN} AND {WEEKDAY_MAX}),
+                is_available INTEGER NOT NULL DEFAULT 1 CHECK (is_available IN (0, 1)),
+                PRIMARY KEY (staff_id, weekday),
+                FOREIGN KEY (staff_id) REFERENCES staff (staff_id)
             )
             """
         )
@@ -176,6 +273,30 @@ def initialize_database(conn: sqlite3.Connection) -> None:
                 (3, "CLEANER", "クリーナー"),
             ],
         )
+
+        # skill_code の重複を無視するため何度実行しても増えない。
+        # 既存行の名称・有効/無効は上書きしない（運用側で変更した内容を壊さないため）
+        conn.executemany(
+            "INSERT OR IGNORE INTO special_skills (skill_code, skill_name, display_order) "
+            "VALUES (?, ?, ?)",
+            list(INITIAL_SPECIAL_SKILLS),
+        )
+
+
+def _migrate_staff_columns(conn: sqlite3.Connection) -> None:
+    """既存DBのstaffへPhase 5の列を追加する（冪等, 既存データは保持する）.
+
+    CREATE TABLE IF NOT EXISTS は既存テーブルを変更しないため、
+    Phase 1〜4のDBをそのまま使い続けられるようALTER TABLEで列だけ足す。
+    既定値は入れない（勤務曜日・勤務時刻を推測して埋めると誤った条件で
+    シフトが組まれるため、不明な情報はNULLのまま残す）。
+    """
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(staff)")}
+    if not existing:
+        return
+    for column, ddl in STAFF_ADDED_COLUMNS:
+        if column not in existing:
+            conn.execute(f"ALTER TABLE staff ADD COLUMN {ddl}")
 
 
 def _ensure_compatible_schema(conn: sqlite3.Connection) -> None:

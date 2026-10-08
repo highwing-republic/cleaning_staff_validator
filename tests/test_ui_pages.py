@@ -184,6 +184,249 @@ def test_staff_page_edit_form_updates_skill_and_code(db_path):
 
 
 # ---------------------------------------------------------------------------
+# 01 スタッフ: 通常勤務条件・特殊スキル（Phase 5）
+# ---------------------------------------------------------------------------
+
+STAFF_PAGE = "pages/01_staff.py"
+
+
+def _open_staff_page():
+    at = AppTest.from_file(_page(STAFF_PAGE), default_timeout=30)
+    at.run()
+    assert not at.exception
+    return at
+
+
+def _heavy_work_id(db_path):
+    conn = get_connection(str(db_path))
+    skill_id = repo.list_special_skills(conn)[0].special_skill_id
+    conn.close()
+    return skill_id
+
+
+def test_staff_page_shows_weekday_checkboxes(db_path):
+    at = _open_staff_page()
+    labels = [c.label for c in at.checkbox]
+    for label in ("月", "火", "水", "木", "金", "土", "日"):
+        assert label in labels
+
+
+def test_staff_page_shows_standard_time_inputs(db_path):
+    at = _open_staff_page()
+    labels = [t.label for t in at.text_input]
+    assert "通常開始時刻" in labels
+    assert "通常終了時刻" in labels
+
+
+def test_staff_page_shows_work_volume_inputs(db_path):
+    at = _open_staff_page()
+    labels = [n.label for n in at.number_input]
+    assert "目標勤務日数 / 週（任意）" in labels
+    assert "期間内最大勤務日数（任意）" in labels
+    assert "最大連続勤務日数（任意）" in labels
+
+
+def test_staff_page_offers_heavy_work_special_skill(db_path):
+    at = _open_staff_page()
+    multiselects = [m for m in at.multiselect if m.label == "特殊スキル"]
+    assert multiselects
+    assert any("力仕事可" in str(m.options) for m in multiselects)
+
+
+def test_staff_page_creates_staff_with_standard_conditions(db_path):
+    """新規登録で通常勤務条件・曜日・特殊スキルがまとめて保存されること."""
+    heavy_work = _heavy_work_id(db_path)
+    at = _open_staff_page()
+
+    at.text_input[0].input("0007")
+    at.text_input[1].input("Aさん")
+    at.selectbox[1].select(4)                                     # 総合スキル
+    at.text_input(key="create_start").input("09:00")
+    at.text_input(key="create_end").input("15:30")
+    at.number_input(key="create_target_days").set_value(4)
+    at.number_input(key="create_max_consecutive").set_value(5)
+    # format_func付きのmultiselectでは set_value で表示名を渡す
+    at.multiselect(key="create_special_skills").set_value(["力仕事可"])
+    for weekday in (0, 1, 3, 4, 5):
+        at.checkbox(key=f"create_weekday_{weekday}").check()
+    [b for b in at.button if b.label == "登録"][0].click()
+    at.run()
+    assert not at.exception
+
+    conn = get_connection(str(db_path))
+    created = repo.get_staff_by_employee_code(conn, "0007")
+    detail = repo.get_staff_detail(conn, created.staff_id)
+    conn.close()
+
+    assert detail.staff.standard_start_time == "09:00"
+    assert detail.staff.standard_end_time == "15:30"
+    assert detail.staff.target_days_per_week == 4
+    assert detail.staff.max_consecutive_days == 5
+    assert detail.staff.max_days_per_period is None
+    assert detail.weekdays == (0, 1, 3, 4, 5)
+    assert detail.special_skill_ids == (heavy_work,)
+
+
+def test_staff_page_creates_short_time_part_timer(db_path):
+    """通常から他のスタッフより早く終わるパートを登録できること."""
+    at = _open_staff_page()
+    at.text_input[0].input("0008")
+    at.text_input[1].input("Bさん")
+    at.text_input(key="create_start").input("09:00")
+    at.text_input(key="create_end").input("13:00")
+    [b for b in at.button if b.label == "登録"][0].click()
+    at.run()
+    assert not at.exception
+
+    conn = get_connection(str(db_path))
+    created = repo.get_staff_by_employee_code(conn, "0008")
+    conn.close()
+    assert (created.standard_start_time, created.standard_end_time) == ("09:00", "13:00")
+
+
+def test_staff_page_rejects_end_before_start(db_path):
+    at = _open_staff_page()
+    at.text_input[0].input("0009")
+    at.text_input[1].input("Cさん")
+    at.text_input(key="create_start").input("15:00")
+    at.text_input(key="create_end").input("09:00")
+    [b for b in at.button if b.label == "登録"][0].click()
+    at.run()
+    assert not at.exception
+    assert any("終了時刻は開始時刻より後" in e.value for e in at.error)
+
+    conn = get_connection(str(db_path))
+    assert repo.get_staff_by_employee_code(conn, "0009") is None
+    conn.close()
+
+
+def test_staff_page_rejects_start_time_only(db_path):
+    at = _open_staff_page()
+    at.text_input[0].input("0010")
+    at.text_input[1].input("Dさん")
+    at.text_input(key="create_start").input("09:00")
+    [b for b in at.button if b.label == "登録"][0].click()
+    at.run()
+    assert not at.exception
+    assert any("開始・終了の両方" in e.value for e in at.error)
+
+    conn = get_connection(str(db_path))
+    assert repo.get_staff_by_employee_code(conn, "0010") is None
+    conn.close()
+
+
+def test_staff_page_allows_creation_without_standard_conditions(db_path):
+    """勤務条件が未確定のスタッフも登録できること（不明は不明のまま残す）."""
+    at = _open_staff_page()
+    at.text_input[0].input("0011")
+    at.text_input[1].input("Eさん")
+    [b for b in at.button if b.label == "登録"][0].click()
+    at.run()
+    assert not at.exception
+
+    conn = get_connection(str(db_path))
+    created = repo.get_staff_by_employee_code(conn, "0011")
+    detail = repo.get_staff_detail(conn, created.staff_id)
+    conn.close()
+    assert detail.staff.standard_start_time is None
+    assert detail.staff.target_days_per_week is None
+    assert detail.weekdays == ()
+    assert detail.special_skill_ids == ()
+
+
+def test_staff_page_created_staff_appears_in_list(db_path):
+    at = _open_staff_page()
+    at.text_input[0].input("0012")
+    at.text_input[1].input("Fさん")
+    at.text_input(key="create_start").input("09:00")
+    at.text_input(key="create_end").input("15:30")
+    for weekday in (0, 2, 4):
+        at.checkbox(key=f"create_weekday_{weekday}").check()
+    [b for b in at.button if b.label == "登録"][0].click()
+    at.run()
+    assert not at.exception
+
+    table = at.dataframe[0].value
+    assert "0012" in list(table["従業員番号"])
+    row = table[table["従業員番号"] == "0012"].iloc[0]
+    # 内部値（0,2,4）ではなく人が読める形で表示する
+    assert row["通常勤務曜日"] == "月・水・金"
+    assert row["通常勤務時間"] == "09:00-15:30（390分）"
+
+
+def test_staff_list_shows_special_skill_names(db_path):
+    heavy_work = _heavy_work_id(db_path)
+    conn = get_connection(str(db_path))
+    repo.create_staff(
+        conn, "0013", "Gさん", CLEANER, 3, "清掃", special_skill_ids=[heavy_work]
+    )
+    conn.close()
+
+    at = _open_staff_page()
+    table = at.dataframe[0].value
+    row = table[table["従業員番号"] == "0013"].iloc[0]
+    assert row["特殊スキル"] == "力仕事可"
+
+
+def test_staff_list_shows_unset_target_days_explicitly(db_path):
+    conn = get_connection(str(db_path))
+    repo.create_staff(conn, "0014", "Hさん", CLEANER, 3, "清掃")
+    conn.close()
+
+    at = _open_staff_page()
+    table = at.dataframe[0].value
+    row = table[table["従業員番号"] == "0014"].iloc[0]
+    assert row["目標日数/週"] == "未設定"
+
+
+def test_staff_page_edit_form_updates_standard_conditions(db_path):
+    heavy_work = _heavy_work_id(db_path)
+    conn = get_connection(str(db_path))
+    staff_id = repo.create_staff(
+        conn, "0020", "Iさん", CLEANER, 3, "清掃",
+        standard_start_time="09:00", standard_end_time="15:30",
+        target_days_per_week=5, weekdays=[0, 1, 3], special_skill_ids=[heavy_work],
+    )
+    conn.close()
+
+    at = _open_staff_page()
+    at.text_input(key="edit_end").input("13:00")
+    at.number_input(key="edit_target_days").set_value(3)
+    at.checkbox(key="edit_weekday_1").uncheck()
+    at.checkbox(key="edit_weekday_5").check()
+    at.multiselect(key="edit_special_skills").set_value([])
+    [b for b in at.button if b.label == "更新"][0].click()
+    at.run()
+    assert not at.exception
+
+    conn = get_connection(str(db_path))
+    detail = repo.get_staff_detail(conn, staff_id)
+    conn.close()
+    assert detail.staff.standard_end_time == "13:00"
+    assert detail.staff.target_days_per_week == 3
+    assert detail.weekdays == (0, 3, 5)
+    assert detail.special_skill_ids == ()
+
+
+def test_staff_page_edit_form_prefills_existing_conditions(db_path):
+    conn = get_connection(str(db_path))
+    repo.create_staff(
+        conn, "0021", "Jさん", CLEANER, 3, "清掃",
+        standard_start_time="09:30", standard_end_time="14:30",
+        target_days_per_week=4, weekdays=[0, 2],
+    )
+    conn.close()
+
+    at = _open_staff_page()
+    assert at.text_input(key="edit_start").value == "09:30"
+    assert at.text_input(key="edit_end").value == "14:30"
+    assert at.number_input(key="edit_target_days").value == 4
+    assert at.checkbox(key="edit_weekday_0").value is True
+    assert at.checkbox(key="edit_weekday_1").value is False
+    assert at.checkbox(key="edit_weekday_2").value is True
+
+
+# ---------------------------------------------------------------------------
 # 03 日別必要条件
 # ---------------------------------------------------------------------------
 

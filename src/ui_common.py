@@ -24,6 +24,26 @@ def format_skill_level(level: int) -> str:
     return f"{level} - {SKILL_LEVELS.get(level, '?')}"
 
 
+def format_weekdays(weekdays: list[int] | tuple[int, ...]) -> str:
+    """通常勤務曜日を人が読める形にする（例 '月・火・木・金・土'）.
+
+    DBの内部値（0,1,3,4,5）をそのまま画面に出さないための変換。
+    """
+    labels = [
+        WEEKDAY_LABELS_JA[w]
+        for w in sorted(set(weekdays))
+        if isinstance(w, int) and 0 <= w < len(WEEKDAY_LABELS_JA)
+    ]
+    return "・".join(labels)
+
+
+def format_optional_int(value: int | None, suffix: str = "") -> str:
+    """任意項目の数値表示. 未設定は「未設定」と出す（空欄だと入力漏れと区別できない）."""
+    if value is None:
+        return "未設定"
+    return f"{value}{suffix}"
+
+
 def open_connection() -> sqlite3.Connection:
     """このスクリプト実行用のDB接続を新規に作る.
 
