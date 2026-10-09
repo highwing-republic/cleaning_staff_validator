@@ -411,6 +411,9 @@ class GenerationStaff:
     max_consecutive_days が None なら連勤の上限なし。
     target_days_per_week が None なら、チェッカーは週5日、その他は
     最低必要人数の平均から自動目安を計算する。
+    active=False は再生成の文脈専用（確定日・固定セルの実績を数えるために
+    含めるだけで、全日固定され新たな勤務は割り当てない。目標・公平性の
+    対象にもしない）。
     """
 
     staff_id: int
@@ -418,6 +421,7 @@ class GenerationStaff:
     staff_name: str
     role_id: int
     skill_level: int
+    active: bool = True
     # Role固有の勤務方針に使う。DBのrole_idを決め打ちしないためcodeも渡す。
     role_code: str | None = None
     day_conditions: dict[str, StaffDayCondition] = field(default_factory=dict)
@@ -785,8 +789,12 @@ class ScheduleChange:
     staff_name: str
     before_is_working: bool
     after_is_working: bool
+    before_start_time: str | None = None
+    before_end_time: str | None = None
     after_start_time: str | None = None
     after_end_time: str | None = None
+    # 行がなかったセルを新規作成する場合 True（有効スタッフの行を揃えるため）
+    is_new_row: bool = False
 
 
 @dataclass(frozen=True)
@@ -812,6 +820,8 @@ class RegenerationPreview:
     conflicts: list[FixedAssignmentConflict] = field(default_factory=list)
     target_dates: list[str] = field(default_factory=list)
     skipped_finalized_dates: list[str] = field(default_factory=list)
+    # 勤務表が未作成のため再生成の対象にならなかった日
+    skipped_missing_dates: list[str] = field(default_factory=list)
     errors: list[ValidationError] = field(default_factory=list)
 
     @property

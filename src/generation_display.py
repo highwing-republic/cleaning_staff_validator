@@ -156,7 +156,14 @@ def format_schedule_cell(
 
 def format_schedule_change(change: ScheduleChange) -> str:
     """再生成プレビューの1行（例 '休 → 09:00-15:30'）."""
-    before = OFF_LABEL if not change.before_is_working else "出勤"
+    if change.is_new_row:
+        before = SCHEDULE_MISSING_LABEL
+    elif not change.before_is_working:
+        before = OFF_LABEL
+    elif change.before_start_time and change.before_end_time:
+        before = f"{change.before_start_time}-{change.before_end_time}"
+    else:
+        before = "出勤"
     if change.after_is_working and change.after_start_time and change.after_end_time:
         after = f"{change.after_start_time}-{change.after_end_time}"
     else:

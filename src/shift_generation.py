@@ -120,7 +120,11 @@ def generate_shift(request: GenerationRequest) -> ScheduleGenerationResult:
         automatic_average_ids,
     )
 
-    total_budget = request.time_limit_seconds or SOLVE_TIME_LIMIT_SECONDS
+    total_budget = (
+        request.time_limit_seconds
+        if request.time_limit_seconds is not None
+        else SOLVE_TIME_LIMIT_SECONDS
+    )
     started = time.monotonic()
     values, solver_status = _solve_lexicographic(model, x, objectives, started, total_budget)
     solve_seconds = time.monotonic() - started
@@ -290,8 +294,10 @@ def _effective_target_scales(
     明示目標を最優先する。目標未設定のチェッカーは週5日、その他の
     未設定者は最低必要人数を全スタッフで均等に分担した日数を目安にする。
     後者は小数を保持するため、期間日数から週日数へ丸めず直接scaleへ直す。
+    無効（active=False）のスタッフは全日固定で動かないため対象にしない。
     """
-    if not staff_list or not work_dates:
+    active_staff = [staff for staff in staff_list if staff.active]
+    if not active_staff or not work_dates:
         return {}, set()
 
     total_minimum_workdays = sum(
@@ -300,13 +306,13 @@ def _effective_target_scales(
         if day.requirement_is_set
     )
     automatic_average_scaled = int(
-        round(7 * total_minimum_workdays / len(staff_list))
+        round(7 * total_minimum_workdays / len(active_staff))
     )
     period_days = len(work_dates)
 
     targets: dict[int, int] = {}
     automatic_average_ids: set[int] = set()
-    for staff in staff_list:
+    for staff in active_staff:
         if staff.target_days_per_week is not None:
             target_scaled = staff.target_days_per_week * period_days
         elif staff.role_code == ROLE_CHECKER:

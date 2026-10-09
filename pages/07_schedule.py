@@ -256,6 +256,11 @@ if preview is not None:
                 f"確定済みのため変更しない日: "
                 f"{'、'.join(format_date_short(d) for d in preview.skipped_finalized_dates)}"
             )
+        if preview.skipped_missing_dates:
+            st.caption(
+                f"勤務表が未作成のため対象外の日: "
+                f"{'、'.join(format_date_short(d) for d in preview.skipped_missing_dates)}"
+            )
 
         for day in preview.result.shortage_days:
             st.warning(
