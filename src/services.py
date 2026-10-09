@@ -32,6 +32,7 @@ from src.models import (
     GenerationDay,
     GenerationRequest,
     GenerationStaff,
+    HomeStatus,
     ImportIssue,
     MonthlyValidationResult,
     RegenerationPreview,
@@ -60,7 +61,6 @@ from src.validation import (
     PREFERENCE_STAFF_NOT_FOUND,
     SCHEDULE_ALREADY_EXISTS,
     SCHEDULE_ASSIGNMENT_NOT_FOUND,
-    SCHEDULE_DATE_OUT_OF_PERIOD,
     SCHEDULE_DAY_FINALIZED_READONLY,
     SCHEDULE_DAY_NOT_FOUND,
     SCHEDULE_NOTHING_TO_REGENERATE,
@@ -1153,4 +1153,50 @@ def export_schedule_excel(
     """勤務表Excelを bytes で返す（DBには保存しない）."""
     return build_schedule_excel(
         build_schedule_export(conn, work_dates, exported_at=exported_at)
+    )
+
+
+# ---------------------------------------------------------------------------
+# ホーム画面の進行状況（Phase 12）
+# ---------------------------------------------------------------------------
+
+
+def get_home_status(conn: sqlite3.Connection, work_dates: list[str]) -> HomeStatus:
+    """対象期間について、どこまで入力・作成が進んでいるかを数える."""
+    staff = repo.list_staff(conn, include_inactive=False)
+    without_time = sum(
+        1
+        for s in staff
+        if s.standard_start_time is None or s.standard_end_time is None
+    )
+    if not work_dates:
+        return HomeStatus(
+            work_dates=[],
+            active_staff_count=len(staff),
+            staff_without_work_time=without_time,
+        )
+
+    first, last = work_dates[0], work_dates[-1]
+    target = set(work_dates)
+    preference_days = len(
+        {
+            p.work_date
+            for p in repo.list_preferences_in_period(conn, first, last)
+            if p.work_date in target
+        }
+    )
+    requirement_days = sum(
+        1
+        for r in repo.list_daily_requirements(conn, first, last)
+        if r.work_date in target
+    )
+    days = [d for d in repo.list_schedule_days(conn, first, last) if d.work_date in target]
+    return HomeStatus(
+        work_dates=list(work_dates),
+        active_staff_count=len(staff),
+        staff_without_work_time=without_time,
+        preference_days=preference_days,
+        requirement_days=requirement_days,
+        schedule_days=len(days),
+        finalized_days=sum(1 for d in days if d.is_finalized),
     )

@@ -21,6 +21,7 @@ NO_ROW_LABEL = "-"
 NOT_APPLICABLE = "-"
 DRAFT_NOTICE = "※下書きの日付を含みます"
 
+# Excelの問題一覧だけで使う内部コード（画面には出さない）
 SEVERITY_LABELS = {
     VALIDATION_STATUS_ERROR: "ERROR",
     VALIDATION_STATUS_WARNING: "WARNING",
@@ -28,11 +29,22 @@ SEVERITY_LABELS = {
     VALIDATION_STATUS_OK: "OK",
 }
 
+# 画面・Excelの日本語表記（不足＝このままでは要件不足 / 確認＝確認が必要 / 情報＝状態説明）
+SEVERITY_TEXTS = {
+    VALIDATION_STATUS_ERROR: "不足",
+    VALIDATION_STATUS_WARNING: "確認",
+    VALIDATION_STATUS_INFO: "情報",
+    VALIDATION_STATUS_OK: "問題なし",
+}
+
 SEVERITY_MARKS = {
-    VALIDATION_STATUS_ERROR: "🔴 ERROR",
-    VALIDATION_STATUS_WARNING: "🟡 WARNING",
-    VALIDATION_STATUS_INFO: "🔵 INFO",
-    VALIDATION_STATUS_OK: "🟢 OK",
+    status: f"{mark} {SEVERITY_TEXTS[status]}"
+    for status, mark in (
+        (VALIDATION_STATUS_ERROR, "🔴"),
+        (VALIDATION_STATUS_WARNING, "🟡"),
+        (VALIDATION_STATUS_INFO, "🔵"),
+        (VALIDATION_STATUS_OK, "🟢"),
+    )
 }
 
 _SEVERITY_ORDER = {
@@ -56,10 +68,10 @@ def format_schedule_status(day: ScheduleDayValidationResult) -> str:
 
 
 def format_day_state(day: ScheduleDayValidationResult) -> str:
-    """'確定・OK' のように、作成状態と判定をまとめて表す."""
+    """'確定・問題なし' のように、作成状態と判定をまとめて表す."""
     if not day.exists:
         return STATUS_MISSING_LABEL
-    return f"{format_schedule_status(day)}・{SEVERITY_LABELS.get(day.status, day.status)}"
+    return f"{format_schedule_status(day)}・{SEVERITY_TEXTS.get(day.status, day.status)}"
 
 
 def format_date_with_status(day: ScheduleDayValidationResult) -> str:

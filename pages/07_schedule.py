@@ -24,14 +24,21 @@ from src.generation_display import (
     format_schedule_day_status,
     format_shortage_summary,
 )
+from src.navigation import (
+    HEADING_SCHEDULE,
+    PAGE_GENERATE,
+    PAGE_OUTPUT,
+    PAGE_PREFERENCES,
+    PAGE_SCHEDULE,
+)
 from src.period_utils import format_date_short, period_dates
 from src.ui_common import open_connection, select_period, show_errors
 
-st.set_page_config(page_title="勤務表調整", layout="wide")
-st.title("⑦ 勤務表調整")
+st.set_page_config(page_title=PAGE_SCHEDULE, layout="wide")
+st.title(HEADING_SCHEDULE)
 st.caption(
     "保存済みの勤務表を手修正し、変更箇所を固定して再生成できます。"
-    "確定した日は変更されません。勤務時間を変えたい場合は「⑤ 勤務希望入力」を直してから再生成してください。"
+    f"確定した日は変更されません。勤務時間を変えたい場合は「{PAGE_PREFERENCES}」を直してから再生成してください。"
 )
 
 conn = open_connection()
@@ -65,7 +72,7 @@ st.caption(f"対象期間: {dates[0]} 〜 {dates[-1]}")
 if not schedule.existing_dates:
     st.info(
         "この期間の勤務表はまだ作成されていません。"
-        "「⑥ シフト生成」で勤務案を作成し、下書き保存してください。"
+        f"「{PAGE_GENERATE}」で勤務案を作成し、下書き保存してください。"
     )
     st.stop()
 
@@ -286,10 +293,11 @@ if preview is not None:
                 st.rerun()
     elif preview.result is not None:
         st.error(
-            "再生成できませんでした"
-            f"（計算結果: {preview.result.solver_status}）。"
-            "固定した勤務と勤務希望が矛盾していないか確認してください。"
+            "再生成できませんでした。固定した条件が現在の勤務条件と矛盾しています。"
+            f"固定を解除するか、「{PAGE_PREFERENCES}」で勤務希望を確認してください。"
         )
+        with st.expander("詳しい情報"):
+            st.caption(f"計算結果: {preview.result.solver_status}")
 
 # ---------------------------------------------------------------------------
 # 日別の確定
@@ -346,3 +354,8 @@ if existing:
                     f"{format_date_short(target_date)} を確定しました。"
                 )
                 st.rerun()
+
+st.divider()
+st.caption(
+    f"手直しと確定が終わったら、「{PAGE_OUTPUT}」でExcelを出力して印刷してください。"
+)

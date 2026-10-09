@@ -11,7 +11,7 @@
 優先し、各スタッフの目標勤務日数へ近づける。希望休の日に勤務したことや
 目標勤務日数からの差は制約違反ではないため、警告ではなくスタッフ別の一覧で示す。
 作成した勤務案は「下書き保存」でDBへ保存し、以降の手修正・固定・再生成・確定は
-「⑦ 勤務表調整」で行う。すでに勤務表がある日を含む期間はここから上書きしない
+「勤務表調整」で行う。すでに勤務表がある日を含む期間はここから上書きしない
 （確定済みの日や固定した勤務を取り違えないため、調整画面からの再生成へ案内する）。
 """
 
@@ -33,12 +33,20 @@ from src.generation_display import (
     format_status,
     format_target_days,
 )
+from src.navigation import (
+    HEADING_GENERATE,
+    PAGE_GENERATE,
+    PAGE_PREFERENCES,
+    PAGE_REQUIREMENTS,
+    PAGE_SCHEDULE,
+    PAGE_STAFF,
+)
 from src.period_utils import format_date_short, period_dates
 from src.requirement_display import count_defined, count_undefined
 from src.ui_common import open_connection, select_period, show_errors
 
-st.set_page_config(page_title="シフト生成", layout="wide")
-st.title("⑥ シフト生成")
+st.set_page_config(page_title=PAGE_GENERATE, layout="wide")
+st.title(HEADING_GENERATE)
 st.caption(
     "通常勤務条件・勤務希望・必要人員から勤務案を作成します。"
     "人員が足りない日も案を作成し、不足として表示します。"
@@ -76,8 +84,20 @@ st.caption(
 )
 
 if not staff_details:
-    st.info("有効なスタッフが登録されていません。先に「① スタッフ管理」で登録してください。")
+    st.info(
+        f"スタッフがまだ登録されていません。最初に「{PAGE_STAFF}」から登録してください。"
+    )
     st.stop()
+
+undefined_dates = [v.work_date for v in requirement_views if not v.is_defined]
+if undefined_dates:
+    shown = "、".join(format_date_short(d) for d in undefined_dates[:5])
+    more = f" ほか{len(undefined_dates) - 5}日" if len(undefined_dates) > 5 else ""
+    st.warning(
+        f"必要人数が未入力の日があります（{shown}{more}）。"
+        "勤務案は作成できますが、その日は必要人数を基準に配置できません。"
+        f"「{PAGE_REQUIREMENTS}」で入力してください。"
+    )
 
 # ---------------------------------------------------------------------------
 # 入力警告（生成前に確認できるようにする）
@@ -132,8 +152,11 @@ if result is None:
 if not result.has_solution:
     st.error(
         "勤務案を作成できませんでした。"
-        f"（計算結果: {result.solver_status}）条件を見直してください。"
+        "勤務希望と必要人数が両立しない可能性があります。"
+        f"「{PAGE_PREFERENCES}」の絶対休みと「{PAGE_REQUIREMENTS}」の必要人数を確認してください。"
     )
+    with st.expander("詳しい情報"):
+        st.caption(f"計算結果: {result.solver_status} / 計算時間 {result.solve_seconds:.2f} 秒")
     st.stop()
 
 # ---------------------------------------------------------------------------
@@ -146,7 +169,9 @@ result_summary[0].metric("総出勤日数", f"{result.total_workdays}日")
 result_summary[1].metric("不足の合計", result.total_shortage)
 result_summary[2].metric("不足のある日", len(result.shortage_days))
 result_summary[3].metric("希望休の尊重", format_prefer_off_respect(result))
-st.caption(f"計算時間 {result.solve_seconds:.2f} 秒（{result.solver_status}）")
+with st.expander("詳しい情報"):
+    # 内部の計算状態は普段見る必要がないため、ここに畳んでおく
+    st.caption(f"計算時間 {result.solve_seconds:.2f} 秒 / 計算結果: {result.solver_status}")
 
 for day in result.shortage_days:
     st.warning(
@@ -243,12 +268,12 @@ if existing_dates:
         f"この期間にはすでに勤務表がある日が{len(existing_dates)}日あります"
         f"（{format_date_short(existing_dates[0])}〜{format_date_short(existing_dates[-1])}）。"
         "確定した日や固定した勤務を消さないよう、ここからは保存しません。"
-        "すでにある日を変更する場合は「⑦ 勤務表調整」から、"
+        f"すでにある日を変更する場合は「{PAGE_SCHEDULE}」から、"
         f"続きを作る場合は開始日を {format_date_short(existing_dates[-1])} の翌日以降にしてください。"
     )
 else:
     st.caption(
-        "下書き保存すると、以降は「⑦ 勤務表調整」で手修正・固定・再生成・確定ができます。"
+        f"下書き保存すると、以降は「{PAGE_SCHEDULE}」で手修正・固定・再生成・確定ができます。"
         "保存しない場合、この勤務案は期間を変えると消えます。"
     )
     if st.button("勤務案を下書き保存", type="primary"):
@@ -258,6 +283,9 @@ else:
         else:
             st.session_state[FLASH_KEY] = (
                 f"勤務案を下書き保存しました（{dates[0]} 〜 {dates[-1]}）。"
-                "「⑦ 勤務表調整」で変更できます。"
+                f"「{PAGE_SCHEDULE}」で変更できます。"
             )
             st.rerun()
+
+st.divider()
+st.caption(f"勤務案を下書き保存したら、「{PAGE_SCHEDULE}」で手直しして日ごとに確定してください。")

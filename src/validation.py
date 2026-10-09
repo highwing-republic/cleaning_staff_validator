@@ -350,7 +350,7 @@ def validate_daily_requirement(
         errors.append(
             ValidationError(
                 code=REQUIREMENT_REQUIRED_TOTAL_STAFF_INVALID,
-                message="最低人数は0以上の整数で入力してください。",
+                message="必要人数は0以上の整数で入力してください。",
                 work_date=work_date,
                 field_name="required_total_staff",
             )
@@ -373,7 +373,7 @@ def validate_daily_requirement(
         errors.append(
             ValidationError(
                 code=REQUIREMENT_REQUIRED_EXCEEDS_MAX,
-                message="最低人数が最大人数を超えています。",
+                message="必要人数が最大人数を超えています。",
                 work_date=work_date,
                 field_name="required_total_staff",
             )

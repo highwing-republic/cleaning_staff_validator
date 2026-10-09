@@ -15,6 +15,11 @@ from src.constants import (
     VALIDATION_STATUS_WARNING,
 )
 from src.models import DailyStaffingResult
+from src.navigation import (
+    HEADING_ATTENDANCE_VALIDATION,
+    PAGE_ATTENDANCE_IMPORT,
+    PAGE_ATTENDANCE_VALIDATION,
+)
 from src.ui_common import format_date_ja, format_year_month_ja, open_connection
 from src.validation_display import (
     REQUIREMENT_MISSING_LABEL,
@@ -34,8 +39,8 @@ FILTER_PROBLEMS = "問題のある日だけ"
 FILTER_ERRORS = "ERRORのみ"
 FILTERS = (FILTER_ALL, FILTER_PROBLEMS, FILTER_ERRORS)
 
-st.set_page_config(page_title="日別検証", layout="wide")
-st.title("④ 日別検証")
+st.set_page_config(page_title=PAGE_ATTENDANCE_VALIDATION, layout="wide")
+st.title(HEADING_ATTENDANCE_VALIDATION)
 st.caption(
     "取り込んだ勤怠シフト（有効版）を日別必要条件と比較します。"
     "🟡 WARNING は勤務区分不明・未登録スタッフ・要件未設定のため確定できない日、"
@@ -46,7 +51,9 @@ conn = open_connection()
 
 active_imports = repo.list_active_imports(conn)  # 対象月の新しい順
 if not active_imports:
-    st.info("勤怠シフトが取り込まれていません。「② 勤怠CSV取込」から取り込んでください。")
+    st.info(
+        f"勤怠シフトが取り込まれていません。「{PAGE_ATTENDANCE_IMPORT}」から取り込んでください。"
+    )
     st.stop()
 
 year_month = st.selectbox(

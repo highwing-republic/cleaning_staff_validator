@@ -19,6 +19,7 @@ from src.models import (
     StaffDatePreferenceInput,
 )
 from src.month_utils import get_month_dates
+from src.period_utils import format_date_short
 from src.ui_common import DB_PATH_ENV
 
 YM = "2026-10"
@@ -100,8 +101,11 @@ def test_menu_lists_every_page_with_japanese_title(db_path):
     import app
 
     menu_paths = [path for path, _ in app.MENU_PAGES]
-    assert menu_paths == PAGES
-    assert menu_paths == sorted(p.relative_to(REPO_ROOT).as_posix() for p in (REPO_ROOT / "pages").glob("*.py"))
+    # 表示順は業務順なのでファイル名順とは一致しない。ページを取りこぼさないことだけ見る
+    assert sorted(menu_paths) == PAGES
+    assert sorted(menu_paths) == sorted(
+        p.relative_to(REPO_ROOT).as_posix() for p in (REPO_ROOT / "pages").glob("*.py")
+    )
     assert all(not title.isascii() for _, title in app.MENU_PAGES)
 
     at = AppTest.from_file(_page("app.py"), default_timeout=30)
@@ -109,6 +113,95 @@ def test_menu_lists_every_page_with_japanese_title(db_path):
     for path in menu_paths:
         at.switch_page(path).run()
         assert not at.exception, path
+
+
+def test_menu_is_ordered_by_the_work_flow(db_path):
+    """§5: 若女将が使う順番に並べる（ファイル名の番号順ではない）."""
+    import app
+
+    assert [title for _, title in app.MAIN_PAGES] == [
+        "① スタッフ管理",
+        "② 勤務希望",
+        "③ 予約・必要人数",
+        "④ シフト生成",
+        "⑤ 勤務表調整",
+        "⑥ 勤務表出力",
+    ]
+    assert [path for path, _ in app.MAIN_PAGES] == [
+        "pages/01_staff.py",
+        "pages/05_preferences.py",
+        "pages/03_requirements.py",
+        "pages/06_generate.py",
+        "pages/07_schedule.py",
+        "pages/08_output.py",
+    ]
+
+
+def test_attendance_pages_are_grouped_as_support(db_path):
+    """§6・§7: 旧勤怠CSV機能は削除せず、補助機能として分ける."""
+    import app
+
+    assert [path for path, _ in app.SUPPORT_PAGES] == [
+        "pages/02_attendance_import.py",
+        "pages/04_validation.py",
+    ]
+    assert app.MENU_PAGES == app.MAIN_PAGES + app.SUPPORT_PAGES
+    assert "補助" in app.SUPPORT_SECTION_LABEL
+
+
+def test_app_title_is_the_mvp_name(db_path):
+    """§9・§91: 画面名称を「清掃勤務表作成」に統一する."""
+    import app
+
+    assert app.APP_TITLE == "清掃勤務表作成"
+    at = AppTest.from_file(_page("app.py"), default_timeout=30)
+    at.run()
+    assert at.title[0].value == "清掃勤務表作成"
+    assert all("validator" not in str(t.value).lower() for t in at.title)
+
+
+def test_home_shows_the_work_flow(db_path):
+    """§12: ホームに勤務表作成の流れを出す."""
+    at = AppTest.from_file(_page("app.py"), default_timeout=30)
+    at.run()
+    text = " ".join(str(m.value) for m in at.markdown)
+    for name in ("スタッフ管理", "勤務希望", "予約・必要人数", "シフト生成", "勤務表調整", "勤務表出力"):
+        assert name in text
+
+
+def test_home_shows_the_progress(db_path):
+    """§13: 進行状況を出す."""
+    _seed(db_path)
+    at = AppTest.from_file(_page("app.py"), default_timeout=30)
+    at.run()
+    metrics = {m.label: m.value for m in at.metric}
+    assert metrics["登録スタッフ"] == "3名"
+    assert "勤務希望あり" in metrics
+    assert "必要人数の入力済み" in metrics
+    assert "勤務表の作成済み" in metrics
+    assert "確定済み" in metrics
+
+
+def test_home_guides_to_staff_registration_when_empty(db_path):
+    """§18: スタッフ0人のときは次にすることを示す."""
+    at = AppTest.from_file(_page("app.py"), default_timeout=30)
+    at.run()
+    assert any("スタッフ管理" in i.value for i in at.info)
+    assert any("登録されていません" in i.value for i in at.info)
+
+
+def test_home_does_not_show_technical_terms(db_path):
+    """§3・§61: 主画面に技術用語・内部値を出さない."""
+    _seed(db_path)
+    at = AppTest.from_file(_page("app.py"), default_timeout=30)
+    at.run()
+    text = " ".join(
+        [str(m.value) for m in at.markdown]
+        + [str(c.value) for c in at.caption]
+        + [str(i.value) for i in at.info]
+    )
+    for word in ("Solver", "Constraint", "CP-SAT", "solver_status", "run_id", "sqlite"):
+        assert word not in text
 
 
 def test_ui_uses_app_specific_db(db_path, tmp_path):
@@ -384,7 +477,7 @@ def test_staff_list_shows_unset_target_days_explicitly(db_path):
     at = _open_staff_page()
     table = at.dataframe[0].value
     row = table[table["従業員番号"] == "0014"].iloc[0]
-    assert row["目標日数/週"] == "未設定"
+    assert row["目標勤務日数/週"] == "未設定"
 
 
 def test_staff_page_edit_form_updates_standard_conditions(db_path):
@@ -2397,7 +2490,7 @@ def _daily_check_table(at):
 
 
 def _issue_table(at):
-    return _table_with_column(at, "種類")
+    return _table_with_column(at, "内容")
 
 
 def _all_page_text(at):
@@ -2469,8 +2562,8 @@ def test_output_page_shows_a_shortage_after_a_manual_change(db_path):
     at = _open_output_page()
     table = _daily_check_table(at)
     assert table.iloc[0]["人数"] == "1名不足"
-    assert "ERROR" in table.iloc[0]["判定"]
-    assert "STAFF_SHORTAGE" in list(_issue_table(at)["種類"])
+    assert "不足" in table.iloc[0]["判定"]
+    assert any("不足しています" in text for text in _issue_table(at)["内容"])
     assert any("問題がある日" in w.value for w in at.warning)
 
 
@@ -2485,7 +2578,7 @@ def test_output_page_shows_requirement_missing_days(db_path):
     at = _open_output_page()
     assert {m.label: m.value for m in at.metric}["要件未設定日数"] == "1"
     assert _daily_check_table(at).iloc[0]["必要"] == "-"
-    assert "REQUIREMENT_MISSING" in list(_issue_table(at)["種類"])
+    assert any("必要条件が未設定" in text for text in _issue_table(at)["内容"])
 
 
 def test_output_page_shows_missing_schedule_days(db_path):
@@ -2503,7 +2596,7 @@ def test_output_page_shows_missing_schedule_days(db_path):
 
     assert int({m.label: m.value for m in at.metric}["未作成日数"]) > 0
     assert "未作成" in list(_daily_check_table(at)["状態"])
-    assert "SCHEDULE_MISSING" in list(_issue_table(at)["種類"])
+    assert any("勤務表が未作成" in text for text in _issue_table(at)["内容"])
     assert any("未作成の日" in w.value for w in at.warning)
 
 
@@ -2555,7 +2648,7 @@ def test_output_page_issue_filter_hides_draft_notices(db_path):
 
     at.radio(key="output_issue_filter").set_value("全日")
     at.run()
-    assert "SCHEDULE_DRAFT" in list(_issue_table(at)["種類"])
+    assert any("下書きです" in text for text in _issue_table(at)["内容"])
 
 
 def test_output_page_reflects_a_regeneration(db_path):
@@ -2589,4 +2682,155 @@ def test_output_page_does_not_edit_the_schedule(db_path):
     labels = [b.label for b in at.button]
     assert all("確定" not in label and "保存" not in label for label in labels)
     assert {sid: _assignment_rows(db_path, sid) for sid in ids.values()} == before
-    assert "⑦ 勤務表調整" in _all_page_text(at)
+    assert "勤務表調整" in _all_page_text(at)
+
+
+# ---------------------------------------------------------------------------
+# 画面間の導線・空データ状態（Phase 12）
+# ---------------------------------------------------------------------------
+
+
+def _captions(at):
+    return " ".join(str(c.value) for c in at.caption)
+
+
+def test_staff_page_empty_state_tells_what_to_do(db_path):
+    """§18: スタッフ0人のときに、次にすることを示す."""
+    at = _open_staff_page()
+    assert any("登録されていません" in i.value for i in at.info)
+    assert any("新規スタッフ登録" in i.value for i in at.info)
+
+
+def test_staff_page_guides_to_the_next_step(db_path):
+    """§14: 次に進む画面を示す."""
+    _seed(db_path)
+    at = _open_staff_page()
+    assert "勤務希望" in _captions(at)
+
+
+def test_preference_page_says_when_there_are_no_preferences(db_path):
+    """§19: 希望が無いのは異常ではないと分かるようにする."""
+    _seed_preference_staff(db_path)
+    at = _open_preference_page()
+    assert any("特別な勤務希望はありません" in i.value for i in at.info)
+    assert any("通常の勤務条件" in i.value for i in at.info)
+
+
+def test_preference_page_guides_to_the_next_step(db_path):
+    _seed_preference_staff(db_path)
+    at = _open_preference_page()
+    assert "予約・必要人数" in _captions(at)
+
+
+def test_requirements_page_guides_to_the_next_step(db_path):
+    at = _open_requirement_page()
+    assert "シフト生成" in _captions(at)
+
+
+def test_generate_page_guides_to_set_missing_requirements(db_path):
+    """§15: 必要人数が未入力の日を、日付付きで案内する."""
+    _seed_generation_staff(db_path)
+    at = _open_generate_page()
+    dates = _generate_dates(at)
+    _seed_generation_requirements(
+        db_path, dates[:2],
+        [DailyRequirementInput(work_date=d, required_total_staff=2) for d in dates[:2]],
+    )
+    at = _open_generate_page()
+
+    warnings = " ".join(w.value for w in at.warning)
+    assert "必要人数が未入力の日があります" in warnings
+    assert "予約・必要人数" in warnings
+    assert format_date_short(dates[2]) in warnings
+
+
+def test_generate_page_has_no_missing_requirement_warning_when_complete(db_path):
+    _seed_generation_staff(db_path)
+    at = _open_generate_page()
+    dates = _generate_dates(at)
+    _seed_generation_requirements(
+        db_path, dates,
+        [DailyRequirementInput(work_date=d, required_total_staff=2) for d in dates],
+    )
+    at = _open_generate_page()
+    assert all("必要人数が未入力" not in w.value for w in at.warning)
+
+
+def test_generate_page_guides_to_the_next_step(db_path):
+    _seed_generation_staff(db_path)
+    at = _open_generate_page()
+    _click_generate(at)
+    assert "勤務表調整" in _captions(at)
+
+
+def test_schedule_page_guides_to_the_next_step(db_path):
+    _seed_saved_schedule(db_path)
+    at = _open_schedule_page()
+    assert "勤務表出力" in _captions(at)
+
+
+def test_schedule_page_without_a_schedule_guides_to_generation(db_path):
+    """§16: 勤務表がない期間では、作成する画面を案内する."""
+    _seed_generation_staff(db_path)
+    at = _open_schedule_page()
+    assert any("まだ作成されていません" in i.value for i in at.info)
+    assert any("シフト生成" in i.value for i in at.info)
+
+
+def test_output_page_guides_to_the_schedule_page_for_drafts(db_path):
+    """§17: 下書きがある場合は勤務表調整での確認を促す."""
+    _seed_saved_schedule(db_path)
+    at = _open_output_page()
+    infos = " ".join(i.value for i in at.info)
+    assert "下書きの日付があります" in infos
+    assert "勤務表調整" in infos
+
+
+def test_main_pages_do_not_show_internal_identifiers(db_path):
+    """§61: 主画面に run_id・source_run_id・計算状態・DBパス等を並べない."""
+    _seed_saved_schedule(db_path)
+    for page in ("pages/07_schedule.py", "pages/08_output.py"):
+        at = AppTest.from_file(_page(page), default_timeout=120)
+        at.run()
+        assert not at.exception, page
+        text = " ".join(
+            [str(m.value) for m in at.markdown]
+            + [str(c.value) for c in at.caption]
+            + [str(i.value) for i in at.info]
+            + [str(w.value) for w in at.warning]
+            + [str(e.value) for e in at.error]
+        )
+        for word in ("run_id", "source_run_id", "sqlite", "solver_status", "OPTIMAL",
+                     str(db_path)):
+            assert word not in text, (page, word)
+
+
+def test_generate_page_keeps_the_calculation_details_folded(db_path):
+    """§61: 計算時間・計算結果は普段の画面へ並べず、展開して見る形にする."""
+    _seed_generation_staff(db_path)
+    at = _open_generate_page()
+    _click_generate(at)
+
+    details = [e for e in at.expander if e.label == "詳しい情報"]
+    assert details, [e.label for e in at.expander]
+    folded = " ".join(str(c.value) for c in details[0].caption)
+    assert "計算時間" in folded
+    assert result_status_word(folded)
+
+    # 畳んだ中以外には計算の内部情報を出さない
+    folded_values = {str(c.value) for e in at.expander for c in e.caption}
+    top_level = " ".join(
+        [str(c.value) for c in at.caption if str(c.value) not in folded_values]
+        + [str(m.value) for m in at.markdown]
+        + [str(i.value) for i in at.info]
+    )
+    assert "solver_status" not in top_level
+    assert "計算時間" not in top_level
+    assert not result_status_word(top_level)
+
+
+def result_status_word(text):
+    """CP-SATの内部ステータス名が含まれるか."""
+    from src.constants import SOLVER_STATUSES
+
+    return [s for s in SOLVER_STATUSES if s in text]

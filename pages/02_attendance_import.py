@@ -11,6 +11,10 @@ from src import attendance_import as parser
 from src import repositories as repo
 from src import services
 from src.models import AttendancePreview, ImportIssue
+from src.navigation import (
+    HEADING_ATTENDANCE_IMPORT,
+    PAGE_ATTENDANCE_IMPORT,
+)
 from src.ui_common import format_year_month_ja, open_connection
 
 IMPORT_BUTTON_LABEL = "この内容を有効版として取り込む"
@@ -26,8 +30,8 @@ WARNING_SECTIONS = [
     (parser.DEPARTMENT_BLANK, "部門空欄"),
 ]
 
-st.set_page_config(page_title="勤怠CSV取込", layout="wide")
-st.title("② 勤怠CSV取込")
+st.set_page_config(page_title=PAGE_ATTENDANCE_IMPORT, layout="wide")
+st.title(HEADING_ATTENDANCE_IMPORT)
 st.caption(
     "勤怠システムから出力した月間シフトCSV（従業員番号・freee人事労務での表示名・部門・日付列）を取り込みます。"
     "ファイルを選択しただけでは保存されません。"

@@ -19,6 +19,11 @@ from src.constants import (
     TARGET_DAYS_PER_WEEK_MIN,
     WEEKDAYS,
 )
+from src.navigation import (
+    HEADING_STAFF,
+    PAGE_PREFERENCES,
+    PAGE_STAFF,
+)
 from src.ui_common import (
     WEEKDAY_LABELS_JA,
     format_optional_int,
@@ -28,8 +33,8 @@ from src.ui_common import (
 )
 from src.work_time import format_standard_work_time
 
-st.set_page_config(page_title="スタッフ管理", layout="wide")
-st.title("① スタッフ管理")
+st.set_page_config(page_title=PAGE_STAFF, layout="wide")
+st.title(HEADING_STAFF)
 st.caption(
     "勤怠CSVとの照合には従業員番号を使用します（氏名では照合しません）。"
     "通常勤務曜日・通常勤務時間は「普段の働き方」です。"
@@ -126,7 +131,7 @@ def _work_volume_inputs(
             value=target_days,
             step=1,
             key=f"{key_prefix}_target_days",
-            help="普段、週に何日程度勤務したいか。未入力なら目標日数の条件なしとして扱います。",
+            help="普段、週に何日程度勤務したいか。未入力なら目標勤務日数の条件なしとして扱います。",
         )
     with center:
         max_period = st.number_input(
@@ -177,7 +182,7 @@ if staff_details:
                 "通常勤務時間": format_standard_work_time(
                     d.staff.standard_start_time, d.staff.standard_end_time
                 ),
-                "目標日数/週": format_optional_int(d.staff.target_days_per_week),
+                "目標勤務日数/週": format_optional_int(d.staff.target_days_per_week),
                 "有効": "有効" if d.staff.active else "無効",
             }
             for d in staff_details
@@ -185,7 +190,10 @@ if staff_details:
     )
     st.dataframe(table, width="stretch", hide_index=True)
 else:
-    st.info("スタッフが登録されていません。")
+    st.info(
+        "スタッフがまだ登録されていません。"
+        "下の「新規スタッフ登録」から、通常の勤務曜日と勤務時間もあわせて登録してください。"
+    )
 
 # ---------------------------------------------------------------------------
 # 新規作成
@@ -368,3 +376,9 @@ if target.active:
         st.rerun()
 else:
     st.caption("このスタッフはすでに無効です。")
+
+st.divider()
+st.caption(
+    f"スタッフの登録・確認が終わったら、「{PAGE_PREFERENCES}」で"
+    "紙に書かれた「普段と違う希望」を転記してください。"
+)

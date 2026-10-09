@@ -15,6 +15,11 @@ from src import repositories as repo
 from src import services
 from src.constants import SKILL_LEVEL_MAX, SKILL_LEVEL_MIN
 from src.models import DailyRequirementInput, RoleRequirementInput
+from src.navigation import (
+    HEADING_REQUIREMENTS,
+    PAGE_GENERATE,
+    PAGE_REQUIREMENTS,
+)
 from src.period_utils import format_date_short, period_dates
 from src.requirement_display import (
     REQUIREMENT_UNDEFINED_LABEL,
@@ -35,11 +40,11 @@ from src.requirements_import import (
 )
 from src.ui_common import open_connection, select_period, select_year_month, show_errors
 
-st.set_page_config(page_title="予約・必要人数", layout="wide")
-st.title("③ 予約・必要人数")
+st.set_page_config(page_title=PAGE_REQUIREMENTS, layout="wide")
+st.title(HEADING_REQUIREMENTS)
 st.caption(
     "予約室数と必要清掃人数は別々の入力です（予約室数から人数を自動計算しません）。"
-    "最低人数＝清掃勤務者がこれ以上必要な人数（完全一致ではありません）。"
+    "必要人数＝清掃勤務者がこれ以上必要な人数（ちょうどその人数という意味ではありません）。"
     "「設定」を外した日は要件未設定になります（必要人数0とは別の状態です）。"
 )
 
@@ -281,7 +286,8 @@ if submitted:
 st.subheader("CSV / Excel 取り込み")
 st.caption(
     "取り込みは従来どおり月単位です（予約室数の列には未対応）。"
-    "列: 日付, 稼働率(任意), 最低人数, 最大人数(任意), ロール別必要人数(role_codeまたはロール名, 任意), "
+    "列: 日付, 稼働率(任意), 必要人数（列名は「最低人数」でも可）, 最大人数(任意), "
+    "ロール別必要人数(role_codeまたはロール名, 任意), "
     "必要スキルLv(任意), 必要スキル人数(任意), 備考(任意)。"
     "全件エラーがない場合のみ保存します。"
 )
@@ -313,7 +319,7 @@ if uploaded is not None:
                     {
                         "日付": r.work_date,
                         "稼働率": r.occupancy_rate,
-                        "最低人数": r.required_total_staff,
+                        "必要人数": r.required_total_staff,
                         "最大人数": r.max_total_staff,
                         "必要スキルLv": r.required_skill_level,
                         "必要スキル人数": r.required_skill_count,
@@ -328,3 +334,8 @@ if uploaded is not None:
                 repo.save_role_requirements(conn, imported_role)
                 st.success("保存しました。")
                 st.rerun()
+
+st.divider()
+st.caption(
+    f"予約室数と必要人数の入力が終わったら、「{PAGE_GENERATE}」で勤務案を作成してください。"
+)

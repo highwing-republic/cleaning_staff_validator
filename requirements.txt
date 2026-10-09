@@ -1,4 +1,6 @@
-streamlit>=1.30
+# Streamlit は 1.64（Windows）/ 1.65（Linux）でテスト済み。
+# st.navigation・width="stretch" を使うため 1.64 未満では動かない。
+streamlit>=1.64,<2
 pandas>=2.0
 openpyxl>=3.1
 ortools==9.15.6755

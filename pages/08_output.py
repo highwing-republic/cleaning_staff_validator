@@ -1,6 +1,6 @@
 """勤務表出力画面（最終確認・検証・Excel出力）.
 
-ここは編集画面ではない。勤務を変えるときは「⑦ 勤務表調整」で直す。
+ここは編集画面ではない。勤務を変えるときは「勤務表調整」で直す。
 検証対象は保存済みの勤務表（計画）で、勤怠CSVの実績とは別物。
 押した時点の勤務表をそのままExcelへ出すため、手修正・再生成の直後でも最新値になる。
 """
@@ -15,6 +15,12 @@ from src.constants import (
     VALIDATION_STATUS_WARNING,
 )
 from src.models import ScheduleDayValidationResult
+from src.navigation import (
+    HEADING_OUTPUT,
+    PAGE_GENERATE,
+    PAGE_OUTPUT,
+    PAGE_SCHEDULE,
+)
 from src.period_utils import format_date_short, period_dates
 from src.schedule_excel import schedule_excel_filename
 from src.schedule_output_display import (
@@ -38,11 +44,11 @@ FILTER_PROBLEMS = "問題のある日だけ"
 FILTER_ALL = "全日"
 FILTERS = (FILTER_PROBLEMS, FILTER_ALL)
 
-st.set_page_config(page_title="勤務表出力", layout="wide")
-st.title("⑧ 勤務表出力")
+st.set_page_config(page_title=PAGE_OUTPUT, layout="wide")
+st.title(HEADING_OUTPUT)
 st.caption(
     "保存済みの勤務表を最終チェックし、印刷用のExcelを出力します。"
-    "勤務を変えるときは「⑦ 勤務表調整」で直してから、この画面に戻ってください。"
+    f"勤務を変えるときは「{PAGE_SCHEDULE}」で直してから、この画面に戻ってください。"
 )
 
 conn = open_connection()
@@ -74,7 +80,7 @@ st.caption(f"対象期間: {dates[0]} 〜 {dates[-1]}")
 if validation.existing_days == 0:
     st.info(
         "この期間の勤務表はまだ作成されていません。"
-        "「⑥ シフト生成」で勤務案を作成し、下書き保存してください。"
+        f"「{PAGE_GENERATE}」で勤務案を作成し、下書き保存してください。"
     )
 
 if validation.missing_days:
@@ -83,7 +89,11 @@ if validation.missing_days:
         "Excelには「未作成」と表示されます。"
     )
 if validation.has_draft:
-    st.info(f"{DRAFT_NOTICE}（Excelの勤務表にも明記されます）。")
+    st.info(
+        f"下書きの日付があります（{validation.draft_days}日）。"
+        f"必要に応じて「{PAGE_SCHEDULE}」で確認してください。"
+        f"Excelの勤務表にも「{DRAFT_NOTICE}」と記載されます。"
+    )
 if validation.problem_days:
     st.warning(
         f"不足などの問題がある日が{validation.problem_days}日あります。"
@@ -163,7 +173,6 @@ if issues:
                 {
                     "日付": format_date_short(issue.work_date),
                     "判定": SEVERITY_MARKS.get(issue.severity, issue.severity),
-                    "種類": issue.code,
                     "内容": issue.message,
                 }
                 for issue in issues

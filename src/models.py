@@ -3,7 +3,6 @@
 from dataclasses import dataclass, field
 
 from src.constants import (
-    GENERATION_STATUS_OK,
     GENERATION_STATUSES,
     SCHEDULE_DAY_DRAFT,
     SCHEDULE_DAY_FINALIZED,
@@ -971,3 +970,24 @@ class ScheduleExport:
     staff_rows: list[ScheduleExportStaffRow] = field(default_factory=list)
     role_names: dict[int, str] = field(default_factory=dict)
     exported_at: str | None = None
+
+
+@dataclass(frozen=True)
+class HomeStatus:
+    """ホーム画面に出す進行状況（対象期間のみを見る）."""
+
+    work_dates: list[str]
+    active_staff_count: int = 0
+    staff_without_work_time: int = 0
+    preference_days: int = 0
+    requirement_days: int = 0
+    schedule_days: int = 0
+    finalized_days: int = 0
+
+    @property
+    def period_days(self) -> int:
+        return len(self.work_dates)
+
+    @property
+    def has_staff(self) -> bool:
+        return self.active_staff_count > 0

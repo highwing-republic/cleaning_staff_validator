@@ -8,7 +8,6 @@ from datetime import date, datetime
 
 import pandas as pd
 
-from src.constants import ROLE_CODES
 from src.models import DailyRequirementInput, RoleRequirementInput, ValidationError
 from src.month_utils import get_month_dates
 from src.validation import validate_daily_requirement

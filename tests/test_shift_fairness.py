@@ -23,7 +23,6 @@ from src.models import GenerationRequest
 from src.period_utils import period_dates
 from src.shift_generation import generate_shift
 from tests.test_shift_generation import (
-    CHECKER,
     CLEANER,
     DATES,
     LEADER,

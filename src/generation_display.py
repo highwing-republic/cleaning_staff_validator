@@ -9,7 +9,7 @@ from src.constants import (
     GENERATION_STATUS_REQUIREMENT_MISSING,
     GENERATION_STATUS_SHORTAGE,
 )
-from src.constants import SCHEDULE_DAY_FINALIZED, SCHEDULE_SOURCE_MANUAL
+from src.constants import SCHEDULE_SOURCE_MANUAL
 from src.models import (
     DailyGenerationResult,
     ScheduleAssignmentRecord,

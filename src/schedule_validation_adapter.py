@@ -33,6 +33,7 @@ from src.models import (
     StaffInput,
     ValidationIssue,
 )
+from src.navigation import PAGE_GENERATE, PAGE_SCHEDULE
 from src.staffing_validation import (
     REQUIREMENT_MISSING,
     ROLE_COMBINATION_SHORTAGE,
@@ -98,7 +99,7 @@ def _schedule_issues(
             ValidationIssue(
                 SCHEDULE_MISSING,
                 VALIDATION_STATUS_WARNING,
-                "この日の勤務表が未作成です（「⑥ シフト生成」で作成してください）。",
+                f"この日の勤務表が未作成です（「{PAGE_GENERATE}」で作成してください）。",
                 work_date,
             )
         ]
@@ -120,7 +121,7 @@ def _schedule_issues(
             ValidationIssue(
                 SCHEDULE_DRAFT,
                 VALIDATION_STATUS_INFO,
-                "この日の勤務表は下書きです（「⑦ 勤務表調整」で確定できます）。",
+                f"この日の勤務表は下書きです（「{PAGE_SCHEDULE}」で確定できます）。",
                 work_date,
             )
         )

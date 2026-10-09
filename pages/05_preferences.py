@@ -14,6 +14,12 @@ from src import repositories as repo
 from src import services
 from src.constants import TIME_STATUS_UNSET
 from src.models import StaffDatePreferenceInput
+from src.navigation import (
+    HEADING_PREFERENCES,
+    PAGE_PREFERENCES,
+    PAGE_REQUIREMENTS,
+    PAGE_STAFF,
+)
 from src.period_utils import period_dates
 from src.preference_display import (
     NOTE_MARK,
@@ -25,8 +31,8 @@ from src.preference_display import (
 from src.ui_common import open_connection, select_period, show_errors
 from src.work_time import format_standard_work_time
 
-st.set_page_config(page_title="勤務希望入力", layout="wide")
-st.title("⑤ 勤務希望入力")
+st.set_page_config(page_title=PAGE_PREFERENCES, layout="wide")
+st.title(HEADING_PREFERENCES)
 st.caption(
     "「普段と違う希望だけ」を入力します。変更がない日は入力不要で「通常」と表示されます。"
     "早上がり・遅出は「その日に出勤するなら何時か」であり、出勤を強制しません。"
@@ -44,7 +50,9 @@ dates = period_dates(start_date, days)
 
 staff_details = repo.list_staff_details(conn, include_inactive=False)
 if not staff_details:
-    st.info("有効なスタッフが登録されていません。先に「① スタッフ管理」で登録してください。")
+    st.info(
+        f"スタッフがまだ登録されていません。最初に「{PAGE_STAFF}」から登録してください。"
+    )
     st.stop()
 
 # ---------------------------------------------------------------------------
@@ -65,6 +73,10 @@ for detail in staff_details:
     overview_rows.append(row)
 
 st.dataframe(pd.DataFrame(overview_rows), width="stretch", hide_index=True)
+
+if not repo.list_preferences_in_period(conn, dates[0], dates[-1]):
+    # 希望がないのは異常ではない（全員が通常どおり働く期間）
+    st.info("期間中の特別な勤務希望はありません。通常の勤務条件をそのまま使います。")
 
 # ---------------------------------------------------------------------------
 # 1スタッフ分の一括編集
@@ -223,5 +235,10 @@ unresolved = [c for c in conditions.values() if c.time_status == TIME_STATUS_UNS
 if unresolved:
     st.warning(
         f"通常勤務時間が未設定のため、{len(unresolved)}日分の実効勤務時間を確定できません。"
-        "「① スタッフ管理」で通常勤務時間を登録してください（時刻は自動で補完しません）。"
+        f"「{PAGE_STAFF}」で通常勤務時間を登録してください（時刻は自動で補完しません）。"
     )
+
+st.divider()
+st.caption(
+    f"勤務希望の転記が終わったら、「{PAGE_REQUIREMENTS}」で予約室数と必要人数を入力してください。"
+)
