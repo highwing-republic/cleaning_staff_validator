@@ -88,13 +88,14 @@ def format_shortage_summary(day: DailyGenerationResult, role_names: dict[int, st
 
 
 def format_target_days(summary: StaffGenerationSummary) -> str:
-    """期間に換算した目安日数（例 '6.0日' / '4.3日'）. 目標未設定なら '-'.
+    """期間に換算した目安日数（例 '6.0日' / '4.3日（自動）'）.
 
     Solver内部は整数スケールだが、画面にはscaled値を出さず日数へ戻して表示する。
     """
     if not summary.has_target:
         return NOT_APPLICABLE
-    return f"{summary.target_days:.1f}日"
+    suffix = "（自動）" if summary.target_is_automatic else ""
+    return f"{summary.target_days:.1f}日{suffix}"
 
 
 def format_scheduled_days(summary: StaffGenerationSummary) -> str:

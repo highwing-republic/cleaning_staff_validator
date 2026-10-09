@@ -85,7 +85,7 @@ overview = pd.DataFrame(
             "予約室": format_reserved_rooms(v.requirement.reserved_rooms)
             if v.is_defined
             else "-",
-            "必要人数": format_required_staff(v.requirement),
+            "最低必要人数": format_required_staff(v.requirement),
             "最大人数": format_max_staff(v.requirement),
             **{
                 role["role_name"]: format_role_condition(v, role["role_id"])
@@ -160,7 +160,7 @@ def _day_inputs(work_date: str) -> tuple[DailyRequirementInput | None, list[Role
         required_col, max_col = st.columns(2)
         with required_col:
             required_total_staff = st.number_input(
-                "必要人数",
+                "最低必要人数",
                 min_value=0,
                 value=req.required_total_staff if req else 0,
                 step=1,

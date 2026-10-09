@@ -409,7 +409,8 @@ class GenerationStaff:
     day_conditions は work_date -> StaffDayCondition（通常条件と勤務希望を
     突き合わせた結果）。Solverは曜日・勤務希望を直接見ず、この結果だけを使う。
     max_consecutive_days が None なら連勤の上限なし。
-    target_days_per_week が None なら目標勤務日数の最適化対象外。
+    target_days_per_week が None なら、チェッカーは週5日、その他は
+    最低必要人数の平均から自動目安を計算する。
     """
 
     staff_id: int
@@ -417,6 +418,8 @@ class GenerationStaff:
     staff_name: str
     role_id: int
     skill_level: int
+    # Role固有の勤務方針に使う。DBのrole_idを決め打ちしないためcodeも渡す。
+    role_code: str | None = None
     day_conditions: dict[str, StaffDayCondition] = field(default_factory=dict)
     max_consecutive_days: int | None = None
     # 週に何日程度勤務したいか（Noneなら目標なし）. Hard Constraintではない
@@ -526,7 +529,9 @@ class StaffGenerationSummary:
         target_scaled = target_days_per_week * period_days
         actual_scaled = 7 * scheduled_days
         deviation_scaled = abs(actual_scaled - target_scaled)
-    target_days_per_week が None の場合、scaled値はすべて None（最適化対象外）。
+    target_days_per_week が None でも、チェッカーは週5日、その他は期間の
+    最低必要人数から求めた平均勤務量を自動目安として最適化する。
+    この場合 target_scaled は値を持ち、target_days_per_week だけが None になる。
     画面では scaled 値をそのまま出さず、target_days（日数）へ戻して表示する。
     """
 
@@ -543,7 +548,11 @@ class StaffGenerationSummary:
 
     @property
     def has_target(self) -> bool:
-        return self.target_days_per_week is not None
+        return self.target_scaled is not None
+
+    @property
+    def target_is_automatic(self) -> bool:
+        return self.target_days_per_week is None and self.target_scaled is not None
 
     @property
     def target_days(self) -> float | None:

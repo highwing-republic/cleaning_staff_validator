@@ -10,17 +10,19 @@ SQLite・Streamlitへは依存しない。Service層が集めた GenerationReque
 「必要8名・勤務可能6名」でも「6名配置・2名不足」として勤務案を返す
 （現場では人員不足が構造的に起こるため、作成不能で終わらせない）。
 
-最適化は辞書式に4段階へ分ける（重み付き単一目的にはしない）。
+最適化は辞書式に6段階へ分ける（重み付き単一目的にはしない）。
     Pass 1: 不足の合計を最小化
-    Pass 2: Pass 1 の最適値に固定したうえで総出勤日数を最小化
-    Pass 3: Pass 1・2 を固定したうえで PREFER_OFF 違反数を最小化
-    Pass 4: Pass 1〜3 を固定したうえで目標勤務日数からの乖離を最小化
-不足0のために全員出勤させる解を避けつつ、同じ不足・同じ総出勤日数の中で
-「誰を出勤させるか」を希望休と目標勤務日数で決める。重み調整に依存しない。
+    Pass 2: Pass 1 を固定し、PREFER_OFF 違反数を最小化
+    Pass 3: Pass 1〜2 を固定し、明示目標・チェッカー目標の乖離を最小化
+    Pass 4: Pass 1〜3 を固定し、目標未設定者の自動目安との乖離を最小化
+    Pass 5: Pass 1〜4 を固定し、個人別乖離の最大値を最小化
+    Pass 6: Pass 1〜5 を固定し、総出勤日数を最小化
+目標勤務日数を満たすための必要人数超過は許容する。一方、同じ公平性なら
+総出勤日数が少ない案を選び、不要な過剰配置は避ける。重み調整には依存しない。
 
-総出勤日数の最小化を希望休より先に置くのは、このアプリの目的が
-「必要な清掃体制を過剰配置せずに作る」ことだからである。目標勤務日数へ
-近づけるために必要以上に人を出勤させてはならない。
+目標未設定者は、チェッカーなら週5日、その他は期間の最低必要人数を
+全スタッフで分担した平均勤務量を自動目安にする。これにより未設定者だけが
+0日に寄ることを防ぎつつ、明示された目標勤務日数を優先できる。
 """
 
 import time
@@ -37,6 +39,7 @@ from src.constants import (
     GENERATION_STATUS_OK,
     GENERATION_STATUS_REQUIREMENT_MISSING,
     GENERATION_STATUS_SHORTAGE,
+    ROLE_CHECKER,
     SOLVE_TIME_LIMIT_SECONDS,
     SOLVER_STATUS_FEASIBLE,
     SOLVER_STATUS_INFEASIBLE,
@@ -104,7 +107,18 @@ def generate_shift(request: GenerationRequest) -> ScheduleGenerationResult:
     shortages = _add_requirement_constraints(model, x, request.staff, days)
     _add_max_consecutive_constraints(model, x, request, work_dates)
 
-    objectives = _objective_factories(model, x, request.staff, work_dates, shortages)
+    effective_targets, automatic_average_ids = _effective_target_scales(
+        request.staff, days, work_dates
+    )
+    objectives = _objective_factories(
+        model,
+        x,
+        request.staff,
+        work_dates,
+        shortages,
+        effective_targets,
+        automatic_average_ids,
+    )
 
     total_budget = request.time_limit_seconds or SOLVE_TIME_LIMIT_SECONDS
     started = time.monotonic()
@@ -123,7 +137,9 @@ def generate_shift(request: GenerationRequest) -> ScheduleGenerationResult:
     daily_results, shortage_issues = _build_daily_results(
         values, request.staff, days, candidates
     )
-    staff_summaries = _build_staff_summaries(values, request.staff, work_dates)
+    staff_summaries = _build_staff_summaries(
+        values, request.staff, work_dates, effective_targets
+    )
 
     return ScheduleGenerationResult(
         work_dates=work_dates,
@@ -147,6 +163,8 @@ def _objective_factories(
     staff_list: list[GenerationStaff],
     work_dates: list[str],
     shortages: dict,
+    effective_targets: dict[int, int],
+    automatic_average_ids: set[int],
 ) -> list[tuple[str, object]]:
     """優先順位の高い順に (名前, 目的式を作る関数) を並べて返す.
 
@@ -162,9 +180,6 @@ def _objective_factories(
     if shortages:
         factories.append(("shortage", lambda: sum(shortages.values())))
 
-    if x:
-        factories.append(("workdays", lambda: sum(x.values())))
-
     prefer_off_terms = [
         x[(staff.staff_id, work_date)]
         for staff in staff_list
@@ -174,13 +189,49 @@ def _objective_factories(
     if prefer_off_terms:
         factories.append(("prefer_off", lambda: sum(prefer_off_terms)))
 
-    if any(staff.target_days_per_week is not None for staff in staff_list):
+    deviation_vars: dict[int, object] | None = None
+
+    def target_deviations() -> dict[int, object]:
+        nonlocal deviation_vars
+        if deviation_vars is None:
+            deviation_vars = _add_target_deviations(
+                model, x, staff_list, work_dates, effective_targets
+            )
+        return deviation_vars
+
+    primary_target_ids = set(effective_targets) - automatic_average_ids
+    if primary_target_ids:
         factories.append(
             (
                 "target_deviation",
-                lambda: sum(_add_target_deviations(model, x, staff_list, work_dates)),
+                lambda: sum(
+                    target_deviations()[staff_id]
+                    for staff_id in sorted(primary_target_ids)
+                ),
             )
         )
+    if automatic_average_ids:
+        factories.append(
+            (
+                "automatic_target_deviation",
+                lambda: sum(
+                    target_deviations()[staff_id]
+                    for staff_id in sorted(automatic_average_ids)
+                ),
+            )
+        )
+    if effective_targets:
+        factories.append(
+            (
+                "max_target_deviation",
+                lambda: _add_max_target_deviation(
+                    model, list(target_deviations().values()), 7 * len(work_dates)
+                ),
+            )
+        )
+
+    if x:
+        factories.append(("workdays", lambda: sum(x.values())))
 
     return factories
 
@@ -195,7 +246,8 @@ def _add_target_deviations(
     x: dict,
     staff_list: list[GenerationStaff],
     work_dates: list[str],
-) -> list:
+    effective_targets: dict[int, int],
+) -> dict[int, object]:
     """目標勤務日数からの乖離を整数スケールで作る.
 
     小数を避けるため 7 倍したスケールで比較する。
@@ -203,22 +255,69 @@ def _add_target_deviations(
         target_scaled = target_days_per_week * 期間日数
     丸めを挟まないので、10日・11日などの期間でも不自然にならない。
     """
-    period_days = len(work_dates)
-    deviations = []
+    deviations: dict[int, object] = {}
 
     for staff in staff_list:
-        target = staff.target_days_per_week
-        if target is None:
+        target_scaled = effective_targets.get(staff.staff_id)
+        if target_scaled is None:
             continue
-        target_scaled = target * period_days
         # 乖離は「全日休み」と「全日出勤」の2端のうち遠い方が最大
-        upper = max(target_scaled, 7 * period_days - target_scaled)
+        upper = max(target_scaled, 7 * len(work_dates) - target_scaled)
         deviation = model.NewIntVar(0, upper, f"target_dev_{staff.staff_id}")
         worked = sum(x[(staff.staff_id, work_date)] for work_date in work_dates)
         model.AddAbsEquality(deviation, 7 * worked - target_scaled)
-        deviations.append(deviation)
+        deviations[staff.staff_id] = deviation
 
     return deviations
+
+
+def _add_max_target_deviation(
+    model: cp_model.CpModel, deviations: list, upper: int
+):
+    """目標乖離が特定のスタッフへ集中しないよう最大値を返す."""
+    maximum = model.NewIntVar(0, upper, "max_target_deviation")
+    model.AddMaxEquality(maximum, deviations)
+    return maximum
+
+
+def _effective_target_scales(
+    staff_list: list[GenerationStaff],
+    days: list[GenerationDay],
+    work_dates: list[str],
+) -> tuple[dict[int, int], set[int]]:
+    """全スタッフの期間目安を7倍スケールで返す.
+
+    明示目標を最優先する。目標未設定のチェッカーは週5日、その他の
+    未設定者は最低必要人数を全スタッフで均等に分担した日数を目安にする。
+    後者は小数を保持するため、期間日数から週日数へ丸めず直接scaleへ直す。
+    """
+    if not staff_list or not work_dates:
+        return {}, set()
+
+    total_minimum_workdays = sum(
+        max(0, day.required_total_staff)
+        for day in days
+        if day.requirement_is_set
+    )
+    automatic_average_scaled = int(
+        round(7 * total_minimum_workdays / len(staff_list))
+    )
+    period_days = len(work_dates)
+
+    targets: dict[int, int] = {}
+    automatic_average_ids: set[int] = set()
+    for staff in staff_list:
+        if staff.target_days_per_week is not None:
+            target_scaled = staff.target_days_per_week * period_days
+        elif staff.role_code == ROLE_CHECKER:
+            target_scaled = 5 * period_days
+        else:
+            target_scaled = automatic_average_scaled
+            if target_scaled <= 0:
+                continue
+            automatic_average_ids.add(staff.staff_id)
+        targets[staff.staff_id] = min(7 * period_days, max(0, target_scaled))
+    return targets, automatic_average_ids
 
 
 def _solve_lexicographic(
@@ -531,6 +630,7 @@ def _build_staff_summaries(
     values: dict,
     staff_list: list[GenerationStaff],
     work_dates: list[str],
+    effective_targets: dict[int, int],
 ) -> list[StaffGenerationSummary]:
     """スタッフ別の勤務状況（希望休の尊重・目標勤務日数への近さ）.
 
@@ -549,10 +649,10 @@ def _build_staff_summaries(
         )
 
         target = staff.target_days_per_week
-        if target is None:
+        target_scaled = effective_targets.get(staff.staff_id)
+        if target_scaled is None:
             target_scaled = actual_scaled = deviation_scaled = None
         else:
-            target_scaled = target * period_days
             actual_scaled = 7 * scheduled_days
             deviation_scaled = abs(actual_scaled - target_scaled)
 

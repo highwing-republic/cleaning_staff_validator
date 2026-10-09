@@ -778,8 +778,8 @@ def test_requirements_overview_distinguishes_undefined_days(db_path):
     _save_requirements(at)
 
     table = at.dataframe[0].value
-    assert list(table["必要人数"])[0] == "0名"
-    assert list(table["必要人数"])[1] == "要件未設定"
+    assert list(table["最低必要人数"])[0] == "0名"
+    assert list(table["最低必要人数"])[1] == "要件未設定"
 
 
 def test_requirements_shows_success_message_after_save(db_path):
@@ -1517,11 +1517,11 @@ def test_generate_page_shows_requirement_missing_days(db_path):
 
     daily = _daily_table(at)
     assert list(daily["状態"])[0] == "要件未設定"
-    assert list(daily["必要"])[0] == "-"
+    assert list(daily["最低必要"])[0] == "-"
     assert list(daily["配置"])[0] == 0
 
 
-def test_generate_page_does_not_overstaff(db_path):
+def test_generate_page_allows_small_overstaffing_for_balance(db_path):
     _seed_generation_staff(db_path)
     at = _open_generate_page()
     dates = _generate_dates(at)
@@ -1533,9 +1533,10 @@ def test_generate_page_does_not_overstaff(db_path):
     _click_generate(at)
 
     daily = _daily_table(at)
-    assert set(daily["配置"]) == {1}
+    assert min(daily["配置"]) >= 1
+    assert max(daily["配置"]) == 2
     metrics = {m.label: m.value for m in at.metric}
-    assert metrics["総出勤日数"] == f"{len(dates)}日"
+    assert metrics["総出勤日数"] == f"{len(dates) + 1}日"
 
 
 def test_generate_page_warns_about_staff_without_standard_time(db_path):

@@ -23,6 +23,7 @@ from src.models import GenerationRequest
 from src.period_utils import period_dates
 from src.shift_generation import generate_shift
 from tests.test_shift_generation import (
+    CHECKER,
     CLEANER,
     DATES,
     LEADER,
@@ -96,11 +97,13 @@ def test_f03_shortage_minimisation_outranks_day_off_requests():
     assert result.issues_with_code(GENERATION_ISSUE_STAFF_SHORTAGE) == []
 
 
-def test_f04_keeps_the_phase8_behaviour_of_not_overstaffing():
-    """F04: 必要1・候補3（希望休なし） → 1名だけ勤務."""
+def test_f04_automatic_targets_allow_small_overstaffing_for_balance():
+    """必要5枠を3名で分担すると、偏りを避けるため各2日の6枠を許容する."""
     result = run([make_staff(i) for i in (1, 2, 3)], required(1))
-    assert all(d.scheduled_staff_count == 1 for d in result.days)
-    assert result.total_workdays == len(DATES)
+    scheduled = [result.staff_summary(i).scheduled_days for i in (1, 2, 3)]
+    assert result.total_shortage == 0
+    assert scheduled == [2, 2, 2]
+    assert result.total_workdays == len(DATES) + 1
 
 
 def test_day_off_request_is_not_an_issue():
@@ -179,16 +182,17 @@ def test_deviation_is_smallest_at_four_days_for_ten_day_period(
     assert abs(7 * scheduled_days - 3 * 10) == expected_deviation
 
 
-def test_f07_staff_without_a_target_is_out_of_scope():
-    """F07: target_days_per_week=NULL → 乖離の対象外・生成は正常."""
+def test_f07_staff_without_a_target_gets_an_automatic_average():
+    """target_days_per_week=NULL → 最低必要人数から自動目安を設定する."""
     a = make_staff(1, "A", target_days_per_week=None)
     result = run([a], required(1))
 
     summary = result.staff_summary(1)
-    assert summary.has_target is False
+    assert summary.has_target is True
+    assert summary.target_is_automatic is True
     assert summary.target_days_per_week is None
-    assert summary.target_scaled is None
-    assert summary.deviation_scaled is None
+    assert summary.target_scaled == 7 * len(DATES)
+    assert summary.deviation_scaled == 0
     assert result.total_target_deviation == 0
     assert result.solver_status == SOLVER_STATUS_OPTIMAL
 
@@ -200,8 +204,38 @@ def test_mixed_staff_with_and_without_targets():
     result = run([a, b], days, work_dates=DATES_14)
 
     assert result.staff_summary(1).has_target is True
-    assert result.staff_summary(2).has_target is False
+    assert result.staff_summary(2).has_target is True
+    assert result.staff_summary(2).target_is_automatic is True
     assert result.staff_summary(1).scheduled_days == len(DATES_14)
+    assert result.staff_summary(2).scheduled_days == len(DATES_14) // 2
+
+
+def test_checker_without_an_explicit_target_uses_five_days_per_week():
+    checker = make_staff(1, "チェッカー", role_id=CHECKER, work_dates=DATES_14)
+    cleaner = make_staff(2, "クリーナー", work_dates=DATES_14)
+    days = [day(d, required_total_staff=1) for d in DATES_14]
+
+    result = run([checker, cleaner], days, work_dates=DATES_14)
+    summary = result.staff_summary(checker.staff_id)
+
+    assert result.total_shortage == 0
+    assert summary.target_days_per_week is None
+    assert summary.target_scaled == 5 * len(DATES_14)
+    assert summary.scheduled_days == 10
+    assert format_target_days(summary) == "10.0日（自動）"
+
+
+def test_checker_explicit_target_overrides_the_five_day_default():
+    checker = make_staff(
+        1, "短時間チェッカー", role_id=CHECKER,
+        target_days_per_week=3, work_dates=DATES_14,
+    )
+    cleaner = make_staff(2, "クリーナー", work_dates=DATES_14)
+    days = [day(d, required_total_staff=1) for d in DATES_14]
+
+    result = run([checker, cleaner], days, work_dates=DATES_14)
+
+    assert result.staff_summary(checker.staff_id).scheduled_days == 6
 
 
 @pytest.mark.parametrize("target", [1, 2, 3, 4, 5, 6, 7])
@@ -253,13 +287,13 @@ def test_f13_max_consecutive_days_outranks_the_target():
     assert result.staff_summary(1).scheduled_days < len(DATES)
 
 
-def test_target_does_not_create_overstaffing():
-    """targetへ近づけるために必要以上の人数を出勤させない（総出勤日数の最小化が上位）."""
+def test_explicit_targets_can_create_overstaffing():
+    """明示目標を満たすためなら最低必要人数を上回ってよい."""
     staff = [make_staff(i, f"S{i}", target_days_per_week=7) for i in (1, 2, 3)]
     result = run(staff, required(1))
 
-    assert all(d.scheduled_staff_count == 1 for d in result.days)
-    assert result.total_workdays == len(DATES)
+    assert all(d.scheduled_staff_count == 3 for d in result.days)
+    assert result.total_workdays == 3 * len(DATES)
 
 
 def test_target_is_not_a_hard_constraint_when_more_staff_are_needed():
@@ -271,13 +305,13 @@ def test_target_is_not_a_hard_constraint_when_more_staff_are_needed():
     assert result.total_shortage == 0
 
 
-def test_target_is_not_a_hard_constraint_when_demand_is_low():
-    """需要が少なければ目標より少ない勤務日数になる."""
+def test_target_is_honoured_when_demand_is_low():
+    """最低需要が少なくても、勤務可能なら明示目標へ近づける."""
     a = make_staff(1, "A", target_days_per_week=7)
     days = [day(d, required_total_staff=1 if index < 2 else 0) for index, d in enumerate(DATES)]
     result = run([a], days)
 
-    assert result.staff_summary(1).scheduled_days == 2
+    assert result.staff_summary(1).scheduled_days == len(DATES)
 
 
 # ---------------------------------------------------------------------------
@@ -298,7 +332,7 @@ def test_f10_day_off_request_outranks_the_target():
     assert result.prefer_off_worked_total == 0
     # targetへ近づけるなら A が全日勤務のはずだが、希望休を優先している
     assert result.staff_summary(1).scheduled_days == len(DATES) - 1
-    assert result.total_workdays == len(DATES)
+    assert result.total_workdays == 7
 
 
 # ---------------------------------------------------------------------------
@@ -402,19 +436,20 @@ def _performance_request(staff_count: int):
     return GenerationRequest(work_dates=DATES_14, staff=staff, days=days)
 
 
-def test_twenty_staff_over_fourteen_days_solves_quickly_with_four_passes():
+def test_twenty_staff_over_fourteen_days_solves_quickly_with_six_passes():
     started = time.monotonic()
     result = generate_shift(_performance_request(20))
     elapsed = time.monotonic() - started
 
     assert result.solver_status == SOLVER_STATUS_OPTIMAL
     assert result.total_shortage == 0
-    assert all(d.scheduled_staff_count == 6 for d in result.days)
+    assert all(d.scheduled_staff_count >= 6 for d in result.days)
+    assert result.total_workdays > 6 * len(DATES_14)
     assert elapsed < 10
     assert result.solve_seconds < 10
 
 
-def test_four_passes_stay_within_the_total_time_budget():
+def test_six_passes_stay_within_the_total_time_budget():
     """時間上限は全段階の合計として扱う（段階ごとに満額を与えない）."""
     request = _performance_request(20)
     budget = 2.0

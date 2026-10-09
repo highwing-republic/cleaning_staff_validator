@@ -487,6 +487,7 @@ def build_generation_request(
     for pref in repo.list_preferences_in_period(conn, first, last):
         preferences_by_staff.setdefault(pref.staff_id, {})[pref.work_date] = pref
 
+    role_codes = {row["role_id"]: row["role_code"] for row in repo.list_roles(conn)}
     staff: list[GenerationStaff] = []
     for detail in repo.list_staff_details(conn, include_inactive=False):
         conditions = {
@@ -502,6 +503,7 @@ def build_generation_request(
                 staff_name=detail.staff.staff_name,
                 role_id=detail.staff.role_id,
                 skill_level=detail.staff.skill_level,
+                role_code=role_codes.get(detail.staff.role_id),
                 day_conditions=conditions,
                 max_consecutive_days=detail.staff.max_consecutive_days,
                 target_days_per_week=detail.staff.target_days_per_week,

@@ -18,6 +18,9 @@ from src.constants import (
     GENERATION_STATUS_REQUIREMENT_MISSING,
     GENERATION_STATUS_SHORTAGE,
     SOLVER_STATUS_OPTIMAL,
+    ROLE_CHECKER,
+    ROLE_CLEANER,
+    ROLE_LEADER,
 )
 from src.day_conditions import resolve_period_conditions
 from src.models import (
@@ -44,6 +47,7 @@ def make_staff(
     staff_name: str | None = None,
     *,
     role_id: int = CLEANER,
+    role_code: str | None = None,
     skill_level: int = 3,
     standard_start_time: str | None = "09:00",
     standard_end_time: str | None = "15:30",
@@ -73,6 +77,11 @@ def make_staff(
         staff_name=name,
         role_id=role_id,
         skill_level=skill_level,
+        role_code=role_code or {
+            LEADER: ROLE_LEADER,
+            CHECKER: ROLE_CHECKER,
+            CLEANER: ROLE_CLEANER,
+        }.get(role_id),
         day_conditions=conditions,
         max_consecutive_days=max_consecutive_days,
         target_days_per_week=target_days_per_week,
@@ -509,8 +518,10 @@ def test_prior_work_history_of_one_day_allows_one_more():
     staff = [make_staff(1, max_consecutive_days=2)]
     prior = {1: {"2026-10-19"}}
     result = run(staff, required(1), prior_work_history=prior)
-    assert TUESDAY in worked_dates(result, 1)
-    assert WEDNESDAY not in worked_dates(result, 1)
+    worked = worked_dates(result, 1)
+    assert len(worked) == 3
+    assert not ({TUESDAY, WEDNESDAY} <= worked)
+    assert result.total_shortage == 2
 
 
 def test_prior_work_history_is_ignored_for_other_staff():

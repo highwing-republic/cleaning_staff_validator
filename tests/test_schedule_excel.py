@@ -320,7 +320,7 @@ def test_daily_sheet_shows_the_numbers_per_day(conn):
     assert first[1] == "確定"
     assert first[headers.index("予約室数")] == "8"
     assert first[headers.index("必要人数")] == "2"
-    assert first[headers.index("配置人数")] == "2"
+    assert int(first[headers.index("配置人数")]) >= 2
     assert first[headers.index("人数")] == "OK"
 
 

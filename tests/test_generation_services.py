@@ -185,18 +185,20 @@ def test_generate_schedule_meets_requirements(conn):
     result = services.generate_schedule(conn, DATES)
     assert result.solver_status == SOLVER_STATUS_OPTIMAL
     assert result.total_shortage == 0
-    assert all(d.scheduled_staff_count == 2 for d in result.days)
+    assert all(d.scheduled_staff_count >= 2 for d in result.days)
+    assert result.total_workdays == 15
     assert all(d.status == GENERATION_STATUS_OK for d in result.days)
 
 
-def test_generate_schedule_does_not_overstaff(conn):
+def test_generate_schedule_balances_unset_targets_with_small_overstaffing(conn):
     for index in range(1, 6):
         add_staff(conn, f"000{index}", f"S{index}")
     set_requirements(conn, DATES, required_total_staff=2)
 
     result = services.generate_schedule(conn, DATES)
-    assert all(d.scheduled_staff_count == 2 for d in result.days)
-    assert result.total_workdays == 2 * len(DATES)
+    assert all(d.scheduled_staff_count >= 2 for d in result.days)
+    assert [s.scheduled_days for s in result.staff_summaries] == [3] * 5
+    assert result.total_workdays == 2 * len(DATES) + 1
 
 
 def test_generate_schedule_reports_staff_shortage(conn):
@@ -579,14 +581,14 @@ def test_generate_schedule_keeps_absolute_off_over_the_target(conn):
     assert result.staff_summary(staff_id).scheduled_days == len(DATES) - 1
 
 
-def test_generate_schedule_target_does_not_cause_overstaffing(conn):
+def test_generate_schedule_explicit_target_can_cause_overstaffing(conn):
     for index in range(1, 4):
         add_staff(conn, f"000{index}", f"S{index}", target_days_per_week=7)
     set_requirements(conn, DATES, required_total_staff=1)
 
     result = services.generate_schedule(conn, DATES)
-    assert all(d.scheduled_staff_count == 1 for d in result.days)
-    assert result.total_workdays == len(DATES)
+    assert all(d.scheduled_staff_count == 3 for d in result.days)
+    assert result.total_workdays == 3 * len(DATES)
 
 
 def test_generate_schedule_target_across_month_boundary(conn):
@@ -626,5 +628,5 @@ def test_target_days_display_from_service(conn):
 
     result = services.generate_schedule(conn, DATES_14)
     assert format_target_days(result.staff_summary(with_target)) == "6.0日"
-    assert format_target_days(result.staff_summary(without)) == "-"
+    assert format_target_days(result.staff_summary(without)) == "7.0日（自動）"
 
