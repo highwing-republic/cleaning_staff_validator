@@ -106,12 +106,17 @@ def _schedule_issues(
 
     issues: list[ValidationIssue] = []
     if missing_assignment_count:
+        advice = (
+            "（確定を解除してこの日を再生成すると揃います）。"
+            if day.is_finalized
+            else "（この日を再生成すると揃います）。"
+        )
         issues.append(
             ValidationIssue(
                 SCHEDULE_INCOMPLETE,
                 VALIDATION_STATUS_WARNING,
                 f"勤務表に行がない有効スタッフが{missing_assignment_count}名います"
-                "（この日を再生成すると揃います）。",
+                + advice,
                 work_date,
                 actual=missing_assignment_count,
             )

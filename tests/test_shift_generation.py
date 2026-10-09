@@ -758,3 +758,10 @@ def test_no_fixed_assignments_matches_plain_generation():
         d.scheduled_staff_count for d in empty.days
     ]
     assert plain.total_shortage == empty.total_shortage
+
+
+def test_a_zero_time_limit_is_honored_not_replaced_by_the_default():
+    """time_limit_seconds=0 は既定の10秒に置き換えず、即座に打ち切る."""
+    result = run([make_staff(1)], required(1), time_limit_seconds=0.0)
+    assert not result.has_solution
+    assert result.solve_seconds < 2

@@ -857,3 +857,119 @@ def test_regeneration_preview_is_fast_enough_for_real_data(conn):
     preview = services.preview_regenerated_schedule(conn, DATES)
     assert preview.result.has_solution
     assert preview.result.solve_seconds < 10
+
+
+# ---------------------------------------------------------------------------
+# 再生成の整合性（レビュー修正の回帰テスト）
+# ---------------------------------------------------------------------------
+
+
+def test_regeneration_creates_rows_for_staff_added_after_the_draft(conn):
+    """下書き後に追加した有効スタッフの行を、再生成が新規作成する."""
+    add_staff(conn, "0001", "既存")
+    set_requirements(conn, SHORT, required_total_staff=2)
+    save_schedule(conn, SHORT)
+    new_id = add_staff(conn, "0002", "新人")
+    assert assignment(conn, SHORT[0], new_id) is None
+
+    preview = services.preview_regenerated_schedule(conn, SHORT)
+    assert any(c.staff_id == new_id and c.is_new_row for c in preview.changes)
+
+    run_id, errors = services.apply_regenerated_schedule(conn, SHORT, preview)
+    assert errors == []
+    assert run_id is not None
+    for work_date in SHORT:
+        assert assignment(conn, work_date, new_id) is not None
+
+
+def test_regeneration_only_covers_dates_that_have_a_schedule(conn):
+    """勤務表がない日はSolverに渡さず、プレビューにも実行履歴にも含めない."""
+    add_staff(conn, "0001", "A", target_days_per_week=3)
+    set_requirements(conn, DATES, required_total_staff=1)
+    save_schedule(conn, SHORT)  # 期間14日のうち先頭3日だけ勤務表がある
+
+    preview = services.preview_regenerated_schedule(conn, DATES)
+    assert preview.result.work_dates == list(SHORT)
+    assert preview.skipped_missing_dates == list(DATES[3:])
+    assert all(c.work_date in SHORT for c in preview.changes)
+
+    run_id, errors = services.apply_regenerated_schedule(conn, DATES, preview)
+    assert errors == []
+    run = repo.get_schedule_run(conn, run_id)
+    assert (run.period_start, run.period_end) == (SHORT[0], SHORT[-1])
+    assert repo.list_schedule_days(conn, DATES[3], DATES[-1]) == []
+
+
+def test_finalized_work_of_inactive_staff_counts_toward_requirements(conn):
+    """確定日に勤務した無効スタッフも人数の充足として数える（不足と誤報告しない）."""
+    leaving = add_staff(conn, "0001", "退職済")
+    staying = add_staff(conn, "0002", "継続")
+    set_requirements(conn, SHORT, required_total_staff=2)
+    save_schedule(conn, SHORT)
+    assert assignment(conn, SHORT[0], leaving).is_working
+    assert assignment(conn, SHORT[0], staying).is_working
+    services.finalize_schedule_day(conn, SHORT[0])
+    repo.deactivate_staff(conn, leaving)
+
+    preview = services.preview_regenerated_schedule(conn, SHORT)
+    assert preview.result.has_solution
+    day0 = next(d for d in preview.result.days if d.work_date == SHORT[0])
+    assert day0.scheduled_staff_count == 2
+    assert day0.staff_shortage == 0
+
+    # 無効スタッフは下書き日の勤務から外れる（確定日はそのまま残る）
+    _, errors = services.apply_regenerated_schedule(conn, SHORT, preview)
+    assert errors == []
+    assert assignment(conn, SHORT[0], leaving).is_working
+    assert not assignment(conn, SHORT[1], leaving).is_working
+
+
+def test_apply_leaves_unchanged_manual_cells_untouched(conn):
+    """出欠も時刻も変わらないセルは反映でも書かず、手修正のsourceを保つ."""
+    staff_id = add_staff(conn, "0001", "A")
+    set_requirements(conn, SHORT, required_total_staff=1)
+    save_schedule(conn, SHORT)
+    services.save_manual_schedule_changes(conn, staff_id, {SHORT[0]: (True, False)})
+    assert assignment(conn, SHORT[0], staff_id).source == SCHEDULE_SOURCE_MANUAL
+
+    preview = services.preview_regenerated_schedule(conn, SHORT)
+    assert not any(
+        c.work_date == SHORT[0] and c.staff_id == staff_id for c in preview.changes
+    )
+    services.apply_regenerated_schedule(conn, SHORT, preview)
+    after = assignment(conn, SHORT[0], staff_id)
+    assert after.source == SCHEDULE_SOURCE_MANUAL
+    assert after.is_working
+
+
+def test_preview_lists_time_only_changes_and_apply_matches(conn):
+    """出欠が同じでも時刻が変わるセルはプレビューに出て、反映で書き換わる."""
+    staff_id = add_staff(conn, "0001", "A")
+    set_requirements(conn, SHORT, required_total_staff=1)
+    save_schedule(conn, SHORT)
+    errors = services.save_period_preferences(
+        conn,
+        staff_id,
+        list(SHORT),
+        [
+            StaffDatePreferenceInput(
+                staff_id=staff_id,
+                work_date=SHORT[0],
+                override_start_time="10:00",
+                override_end_time="14:00",
+            )
+        ],
+    )
+    assert errors == []
+
+    preview = services.preview_regenerated_schedule(conn, SHORT)
+    change = next(
+        c for c in preview.changes
+        if c.work_date == SHORT[0] and c.staff_id == staff_id
+    )
+    assert change.before_is_working and change.after_is_working
+    assert (change.after_start_time, change.after_end_time) == ("10:00", "14:00")
+
+    services.apply_regenerated_schedule(conn, SHORT, preview)
+    after = assignment(conn, SHORT[0], staff_id)
+    assert (after.start_time, after.end_time) == ("10:00", "14:00")

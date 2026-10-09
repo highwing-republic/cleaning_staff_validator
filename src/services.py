@@ -14,7 +14,6 @@ from src.constants import (
     SHIFT_TYPE_UNKNOWN,
 )
 from src.constants import (
-    SCHEDULE_DAY_FINALIZED,
     SCHEDULE_RUN_INITIAL,
     SCHEDULE_SOURCE_GENERATED,
     SCHEDULE_SOURCE_MANUAL,
@@ -39,6 +38,7 @@ from src.models import (
     RoleRequirementInput,
     ScheduleAssignmentRecord,
     ScheduleChange,
+    ScheduleDayRecord,
     ScheduleDayView,
     ScheduleExport,
     ScheduleExportStaffRow,
@@ -471,12 +471,15 @@ def build_generation_request(
     work_dates: list[str],
     prior_work_history: dict[int, set[str]] | None = None,
     time_limit_seconds: float | None = None,
+    extra_staff_ids: set[int] | frozenset[int] = frozenset(),
 ) -> GenerationRequest:
     """DBから生成に必要なデータを集め、Solver用の入力へ変換する.
 
     Solver本体はDBを知らないため、通常勤務曜日・勤務希望はここで
     resolve_period_conditions による実効条件へ畳み込んで渡す。
-    無効（active=0）のスタッフは候補に含めない。
+    無効（active=0）のスタッフは候補に含めない。ただし extra_staff_ids に
+    指定された無効スタッフは active=False のまま含める（再生成で確定日の
+    勤務実績を数えるため。呼び出し側が全日固定して新たな勤務は与えない）。
     """
     if not work_dates:
         return GenerationRequest(work_dates=[], staff=[], days=[])
@@ -489,7 +492,9 @@ def build_generation_request(
 
     role_codes = {row["role_id"]: row["role_code"] for row in repo.list_roles(conn)}
     staff: list[GenerationStaff] = []
-    for detail in repo.list_staff_details(conn, include_inactive=False):
+    for detail in repo.list_staff_details(conn, include_inactive=True):
+        if not detail.staff.active and detail.staff.staff_id not in extra_staff_ids:
+            continue
         conditions = {
             condition.work_date: condition
             for condition in resolve_period_conditions(
@@ -503,6 +508,7 @@ def build_generation_request(
                 staff_name=detail.staff.staff_name,
                 role_id=detail.staff.role_id,
                 skill_level=detail.staff.skill_level,
+                active=bool(detail.staff.active),
                 role_code=role_codes.get(detail.staff.role_id),
                 day_conditions=conditions,
                 max_consecutive_days=detail.staff.max_consecutive_days,
@@ -593,24 +599,20 @@ def get_current_schedule(
 
 def _to_assignment_records(
     result: ScheduleGenerationResult,
-    locked_by_key: dict[tuple[str, int], ScheduleAssignmentRecord] | None = None,
 ) -> list[ScheduleAssignmentRecord]:
     """生成結果を勤務表のレコードへ変換する（勤務時刻はsnapshotとして保存）."""
-    records = []
-    for assignment in result.assignments:
-        existing = (locked_by_key or {}).get((assignment.work_date, assignment.staff_id))
-        records.append(
-            ScheduleAssignmentRecord(
-                work_date=assignment.work_date,
-                staff_id=assignment.staff_id,
-                is_working=assignment.is_working,
-                start_time=assignment.start_time if assignment.is_working else None,
-                end_time=assignment.end_time if assignment.is_working else None,
-                locked=bool(existing.locked) if existing else False,
-                source=SCHEDULE_SOURCE_GENERATED,
-            )
+    return [
+        ScheduleAssignmentRecord(
+            work_date=assignment.work_date,
+            staff_id=assignment.staff_id,
+            is_working=assignment.is_working,
+            start_time=assignment.start_time if assignment.is_working else None,
+            end_time=assignment.end_time if assignment.is_working else None,
+            locked=False,
+            source=SCHEDULE_SOURCE_GENERATED,
         )
-    return records
+        for assignment in result.assignments
+    ]
 
 
 def save_generated_schedule(
@@ -662,6 +664,34 @@ def save_generated_schedule(
 # ---------------------------------------------------------------------------
 
 
+def _load_manual_change_context(
+    conn: sqlite3.Connection,
+    staff_id: int,
+    changes: dict[str, tuple[bool, bool]],
+) -> tuple[
+    StaffDetail | None,
+    dict[str, StaffDatePreferenceInput],
+    dict[str, ScheduleDayRecord],
+    dict[str, ScheduleAssignmentRecord],
+]:
+    """手修正の検証・保存で共有する読み込み（期間をまとめて取得する）."""
+    detail = repo.get_staff_detail(conn, staff_id)
+    if detail is None or not changes:
+        return detail, {}, {}, {}
+
+    first, last = min(changes), max(changes)
+    preferences = {
+        p.work_date: p
+        for p in repo.list_staff_preferences(conn, staff_id, first, last)
+    }
+    days = {d.work_date: d for d in repo.list_schedule_days(conn, first, last)}
+    assignments = {
+        a.work_date: a
+        for a in repo.list_staff_schedule_assignments(conn, staff_id, first, last)
+    }
+    return detail, preferences, days, assignments
+
+
 def validate_manual_schedule_changes(
     conn: sqlite3.Connection,
     staff_id: int,
@@ -672,7 +702,22 @@ def validate_manual_schedule_changes(
     休み→出勤はHard Constraintを破れないので、勤務可能で勤務時刻が確定する日だけ許す。
     出勤→休みは必要人数が不足しても許可する（不足は画面で確認できる）。
     """
-    detail = repo.get_staff_detail(conn, staff_id)
+    detail, preferences, days, assignments = _load_manual_change_context(
+        conn, staff_id, changes
+    )
+    return _validate_manual_changes(
+        detail, preferences, days, assignments, staff_id, changes
+    )
+
+
+def _validate_manual_changes(
+    detail: StaffDetail | None,
+    preferences: dict[str, StaffDatePreferenceInput],
+    days: dict[str, ScheduleDayRecord],
+    assignments: dict[str, ScheduleAssignmentRecord],
+    staff_id: int,
+    changes: dict[str, tuple[bool, bool]],
+) -> list[ValidationError]:
     if detail is None:
         return [
             ValidationError(
@@ -684,15 +729,9 @@ def validate_manual_schedule_changes(
         ]
 
     errors: list[ValidationError] = []
-    preferences = {
-        p.work_date: p
-        for p in repo.list_staff_preferences(
-            conn, staff_id, min(changes), max(changes)
-        )
-    } if changes else {}
 
     for work_date, (is_working, _locked) in sorted(changes.items()):
-        day = repo.get_schedule_day(conn, work_date)
+        day = days.get(work_date)
         if day is None:
             errors.append(
                 ValidationError(
@@ -713,7 +752,7 @@ def validate_manual_schedule_changes(
                 )
             )
             continue
-        if repo.get_schedule_assignment(conn, work_date, staff_id) is None:
+        if assignments.get(work_date) is None:
             errors.append(
                 ValidationError(
                     code=SCHEDULE_ASSIGNMENT_NOT_FOUND,
@@ -769,15 +808,14 @@ def save_manual_schedule_changes(
     if not changes:
         return []
 
-    errors = validate_manual_schedule_changes(conn, staff_id, changes)
+    detail, preferences, days, assignments = _load_manual_change_context(
+        conn, staff_id, changes
+    )
+    errors = _validate_manual_changes(
+        detail, preferences, days, assignments, staff_id, changes
+    )
     if errors:
         return errors
-
-    detail = repo.get_staff_detail(conn, staff_id)
-    preferences = {
-        p.work_date: p
-        for p in repo.list_staff_preferences(conn, staff_id, min(changes), max(changes))
-    }
 
     records = []
     for work_date, (is_working, locked) in sorted(changes.items()):
@@ -820,6 +858,9 @@ def build_regeneration_request(
 
     DRAFT日は locked のセルだけ固定、確定日はその日の全スタッフを固定する。
     連勤の期間境界は確定済みの勤務表から求める（DRAFTは使わない）。
+    勤務表に行がある無効スタッフも含める（確定日の勤務実績を人数・ロール・
+    スキルの充足として数えるため）。無効スタッフは固定されていない日を
+    すべて休みで固定し、新たな勤務は割り当てない。
     """
     current = schedule or get_current_schedule(conn, work_dates)
     fixed: dict[tuple[int, str], int] = {}
@@ -831,12 +872,22 @@ def build_regeneration_request(
             if view.is_finalized or assignment.locked:
                 fixed[(staff_id, view.work_date)] = int(assignment.is_working)
 
+    scheduled_ids = {
+        staff_id for view in current.days for staff_id in view.assignments
+    }
     request = build_generation_request(
         conn,
         work_dates,
         prior_work_history=build_prior_work_history(conn, work_dates),
         time_limit_seconds=time_limit_seconds,
+        extra_staff_ids=scheduled_ids,
     )
+    for staff in request.staff:
+        if staff.active:
+            continue
+        for work_date in work_dates:
+            fixed.setdefault((staff.staff_id, work_date), 0)
+
     return dataclasses.replace(request, fixed_assignments=fixed)
 
 
@@ -899,12 +950,76 @@ def _detect_fixed_conflicts(
     return conflicts
 
 
+def _regeneration_updates(
+    current: CurrentScheduleView,
+    result: ScheduleGenerationResult,
+) -> tuple[list[ScheduleAssignmentRecord], list[ScheduleChange]]:
+    """再生成で書き換えるセルと、その変更一覧を同じ判定で作る.
+
+    プレビューに出ないセルは反映でも書かない（出欠・時刻とも変わらない
+    セルは手修正の時刻・sourceをそのまま保つ）。行がない有効スタッフの
+    セルは新規作成する（SCHEDULE_INCOMPLETE の案内どおり行を揃えるため）。
+    """
+    views = {view.work_date: view for view in current.days}
+    records: list[ScheduleAssignmentRecord] = []
+    changes: list[ScheduleChange] = []
+
+    for assignment in result.assignments:
+        view = views.get(assignment.work_date)
+        if view is None or not view.is_editable:
+            continue
+        existing = view.assignments.get(assignment.staff_id)
+        if existing is not None and existing.locked:
+            continue
+        start_time = assignment.start_time if assignment.is_working else None
+        end_time = assignment.end_time if assignment.is_working else None
+        if (
+            existing is not None
+            and existing.is_working == assignment.is_working
+            and existing.start_time == start_time
+            and existing.end_time == end_time
+        ):
+            continue
+        records.append(
+            ScheduleAssignmentRecord(
+                work_date=assignment.work_date,
+                staff_id=assignment.staff_id,
+                is_working=assignment.is_working,
+                start_time=start_time,
+                end_time=end_time,
+                locked=False,
+                source=SCHEDULE_SOURCE_GENERATED,
+            )
+        )
+        changes.append(
+            ScheduleChange(
+                work_date=assignment.work_date,
+                staff_id=assignment.staff_id,
+                staff_name=assignment.staff_name,
+                before_is_working=existing.is_working if existing else False,
+                after_is_working=assignment.is_working,
+                before_start_time=existing.start_time if existing else None,
+                before_end_time=existing.end_time if existing else None,
+                after_start_time=start_time,
+                after_end_time=end_time,
+                is_new_row=existing is None,
+            )
+        )
+
+    return records, changes
+
+
 def preview_regenerated_schedule(
     conn: sqlite3.Connection,
     work_dates: list[str],
     time_limit_seconds: float | None = None,
 ) -> RegenerationPreview:
-    """再生成の下見を作る（DBは一切変更しない）."""
+    """再生成の下見を作る（DBは一切変更しない）.
+
+    Solverへは勤務表がある日だけを渡す。未作成の日まで渡すと、反映されない
+    日に目標勤務日数や連勤の枠を消費した勤務案ができてしまい、保存結果が
+    最適化結果と食い違うため。
+    """
     current = get_current_schedule(conn, work_dates)
     target_dates = current.draft_dates
 
@@ -931,34 +1046,17 @@ def preview_regenerated_schedule(
         )
 
     request = build_regeneration_request(
-        conn, work_dates, schedule=current, time_limit_seconds=time_limit_seconds
+        conn,
+        current.existing_dates,
+        schedule=current,
+        time_limit_seconds=time_limit_seconds,
     )
     conflicts = _detect_fixed_conflicts(request)
     result = generate_shift(request)
 
     changes: list[ScheduleChange] = []
     if result.has_solution:
-        staff_names = {s.staff_id: s.staff_name for s in request.staff}
-        for assignment in result.assignments:
-            view = current.day(assignment.work_date)
-            if view is None or not view.is_editable:
-                continue
-            existing = view.assignments.get(assignment.staff_id)
-            if existing is None or existing.locked:
-                continue
-            if existing.is_working == assignment.is_working:
-                continue
-            changes.append(
-                ScheduleChange(
-                    work_date=assignment.work_date,
-                    staff_id=assignment.staff_id,
-                    staff_name=staff_names.get(assignment.staff_id, str(assignment.staff_id)),
-                    before_is_working=existing.is_working,
-                    after_is_working=assignment.is_working,
-                    after_start_time=assignment.start_time,
-                    after_end_time=assignment.end_time,
-                )
-            )
+        _, changes = _regeneration_updates(current, result)
 
     return RegenerationPreview(
         work_dates=list(work_dates),
@@ -967,6 +1065,7 @@ def preview_regenerated_schedule(
         conflicts=conflicts,
         target_dates=target_dates,
         skipped_finalized_dates=current.finalized_dates,
+        skipped_missing_dates=current.missing_dates,
     )
 
 
@@ -977,7 +1076,7 @@ def apply_regenerated_schedule(
 ) -> tuple[int | None, list[ValidationError]]:
     """再生成結果を反映する（run_id, エラー）を返す.
 
-    更新するのはDRAFT日の固定されていないセルだけ。
+    更新するのはDRAFT日の固定されていないセルのうち内容が変わるものだけ。
     固定されたセルと確定日は現在値をそのまま残す。
     """
     if not preview.can_apply:
@@ -989,30 +1088,11 @@ def apply_regenerated_schedule(
         ]
 
     current = get_current_schedule(conn, work_dates)
-    records: list[ScheduleAssignmentRecord] = []
-
-    for assignment in preview.result.assignments:
-        view = current.day(assignment.work_date)
-        if view is None or not view.is_editable:
-            continue
-        existing = view.assignments.get(assignment.staff_id)
-        if existing is None or existing.locked:
-            continue
-        records.append(
-            ScheduleAssignmentRecord(
-                work_date=assignment.work_date,
-                staff_id=assignment.staff_id,
-                is_working=assignment.is_working,
-                start_time=assignment.start_time if assignment.is_working else None,
-                end_time=assignment.end_time if assignment.is_working else None,
-                locked=False,
-                source=SCHEDULE_SOURCE_GENERATED,
-            )
-        )
+    records, _changes = _regeneration_updates(current, preview.result)
 
     run_id = repo.apply_regenerated_schedule(
         conn,
-        work_dates,
+        preview.result.work_dates,
         records,
         preview.result.solver_status,
         preview.result.total_shortage,
@@ -1122,11 +1202,12 @@ def build_schedule_export(
         for staff_id in day.assignments
     }
 
+    views = {view.work_date: view for view in schedule.days}
     rows: list[ScheduleExportStaffRow] = []
     for member in _export_staff_order(staff, scheduled_ids):
         cells = {}
         for work_date in work_dates:
-            view = schedule.day(work_date)
+            view = views.get(work_date)
             exists = view is not None and view.exists
             assignment = view.assignments.get(member.staff_id) if view else None
             cells[work_date] = format_export_cell(assignment, exists)

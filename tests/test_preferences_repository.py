@@ -14,6 +14,7 @@ from src.validation import (
     PREFERENCE_DATE_OUT_OF_PERIOD,
     PREFERENCE_DUPLICATED_DATE,
     PREFERENCE_OVERRIDE_TIME_INVALID,
+    PREFERENCE_STAFF_MISMATCH,
     PREFERENCE_STAFF_NOT_FOUND,
 )
 
@@ -420,3 +421,12 @@ def test_service_conditions_by_staff_excludes_inactive(conn, staff_id):
 
 def test_service_conditions_by_staff_with_empty_period(conn, staff_id):
     assert services.get_period_conditions_by_staff(conn, []) == {}
+
+
+def test_service_save_rejects_mismatched_staff_as_a_validation_error(conn, staff_id):
+    """staff_id が食い違う希望は未処理の ValueError ではなく検証エラーで返す."""
+    other = repo.create_staff(conn, "0002", "Bさん", CLEANER)
+    errors = services.save_period_preferences(
+        conn, staff_id, DATES, [pref(other, FIRST, prefer_off=True)]
+    )
+    assert [e.code for e in errors] == [PREFERENCE_STAFF_MISMATCH]
