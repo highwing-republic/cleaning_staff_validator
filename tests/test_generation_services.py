@@ -386,16 +386,13 @@ def test_generate_schedule_with_no_staff(conn):
 
 
 def test_generate_schedule_does_not_persist_results(conn):
-    """Phase 8では生成結果をDBへ保存しない."""
+    """生成だけではDBへ保存しない（保存は save_generated_schedule が行う）."""
     add_staff(conn, "0001", "Aさん")
     set_requirements(conn, DATES, required_total_staff=1)
     services.generate_schedule(conn, DATES)
 
-    tables = {
-        row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
-    }
-    assert "schedule_runs" not in tables
-    assert "schedule_assignments" not in tables
+    for table in ("schedule_runs", "schedule_days", "schedule_assignments"):
+        assert conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0] == 0
 
 
 def test_generate_schedule_does_not_change_input_data(conn):

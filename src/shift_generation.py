@@ -96,6 +96,11 @@ def generate_shift(request: GenerationRequest) -> ScheduleGenerationResult:
             if work_date not in candidates.get(staff.staff_id, set()):
                 model.Add(x[(staff.staff_id, work_date)] == 0)
 
+    # 固定された勤務はHard Constraint（公平性や希望休のために動かさない）。
+    # 候補外の日に出勤で固定されている等の矛盾はここでは解消せず、
+    # INFEASIBLE として返す（固定を黙って解除しないため）。
+    _add_fixed_assignments(model, x, request.fixed_assignments, work_dates)
+
     shortages = _add_requirement_constraints(model, x, request.staff, days)
     _add_max_consecutive_constraints(model, x, request, work_dates)
 
@@ -350,6 +355,28 @@ def _requirement_missing_issues(days: list[GenerationDay]) -> list[GenerationIss
         for day in days
         if not day.requirement_is_set
     ]
+
+
+# ---------------------------------------------------------------------------
+# 固定された勤務（手修正して固定した分と確定日）
+# ---------------------------------------------------------------------------
+
+
+def _add_fixed_assignments(
+    model: cp_model.CpModel,
+    x: dict,
+    fixed_assignments: dict[tuple[int, str], int],
+    work_dates: list[str],
+) -> None:
+    """fixed = 1 なら出勤、0 なら休みで固定する."""
+    target_dates = set(work_dates)
+    for (staff_id, work_date), value in fixed_assignments.items():
+        if work_date not in target_dates:
+            continue
+        key = (staff_id, work_date)
+        if key not in x:
+            continue
+        model.Add(x[key] == (1 if value else 0))
 
 
 # ---------------------------------------------------------------------------

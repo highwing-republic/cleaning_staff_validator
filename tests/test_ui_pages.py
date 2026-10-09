@@ -33,6 +33,7 @@ PAGES = [
     "pages/04_validation.py",
     "pages/05_preferences.py",
     "pages/06_generate.py",
+    "pages/07_schedule.py",
 ]
 
 
@@ -1242,6 +1243,27 @@ def _seed_generation_requirements(db_path, dates, requirements, role_requirement
     conn.close()
 
 
+SAVE_DRAFT_BUTTON = "勤務案を下書き保存"
+
+
+def _schedule_counts(db_path):
+    """(schedule_runs, schedule_days, schedule_assignments) の行数."""
+    conn = get_connection(str(db_path))
+    counts = tuple(
+        conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+        for table in ("schedule_runs", "schedule_days", "schedule_assignments")
+    )
+    conn.close()
+    return counts
+
+
+def _save_draft(at):
+    [b for b in at.button if b.label == SAVE_DRAFT_BUTTON][0].click()
+    at.run()
+    assert not at.exception
+    return at
+
+
 def test_generate_page_runs_without_staff(db_path):
     at = AppTest.from_file(_page(GENERATE_PAGE), default_timeout=120)
     at.run()
@@ -1589,21 +1611,54 @@ def test_generate_page_distributes_towards_targets(db_path):
     assert rows["パートさん"]["目安"] == "4.0日"
 
 
-def test_generate_page_has_no_save_button(db_path):
-    """Phase 8では生成結果を保存しない."""
+def test_generate_page_does_not_save_before_the_button_is_pressed(db_path):
+    """生成しただけではDBへ保存しない."""
     _seed_generation_staff(db_path)
     at = _open_generate_page()
     _click_generate(at)
-    labels = [b.label for b in at.button]
-    assert all("保存" not in label for label in labels)
+    assert _schedule_counts(db_path) == (0, 0, 0)
+    assert any(b.label == SAVE_DRAFT_BUTTON for b in at.button)
 
-    conn = get_connection(str(db_path))
-    tables = {
-        row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
-    }
-    conn.close()
-    assert "schedule_runs" not in tables
-    assert "schedule_assignments" not in tables
+
+def test_generate_page_saves_the_draft_schedule(db_path):
+    """§117: 勤務案を下書き保存できる."""
+    ids = _seed_generation_staff(db_path)
+    at = _open_generate_page()
+    dates = _generate_dates(at)
+    _seed_generation_requirements(
+        db_path, dates,
+        [DailyRequirementInput(work_date=d, required_total_staff=2) for d in dates],
+    )
+    at = _open_generate_page()
+    _click_generate(at)
+    _save_draft(at)
+
+    runs, days, assignments = _schedule_counts(db_path)
+    assert (runs, days) == (1, len(dates))
+    assert assignments == len(ids) * len(dates)
+    assert any("下書き保存しました" in s.value for s in at.success)
+    assert any("勤務表調整" in s.value for s in at.success)
+
+
+def test_generate_page_does_not_offer_to_overwrite_an_existing_schedule(db_path):
+    """§19: 既存勤務表がある期間では保存せず、⑦へ案内する."""
+    _seed_generation_staff(db_path)
+    at = _open_generate_page()
+    dates = _generate_dates(at)
+    _seed_generation_requirements(
+        db_path, dates,
+        [DailyRequirementInput(work_date=d, required_total_staff=2) for d in dates],
+    )
+    at = _open_generate_page()
+    _click_generate(at)
+    _save_draft(at)
+    before = _schedule_counts(db_path)
+
+    at = _open_generate_page()
+    _click_generate(at)
+    assert all(b.label != SAVE_DRAFT_BUTTON for b in at.button)
+    assert any("勤務表調整" in i.value for i in at.info)
+    assert _schedule_counts(db_path) == before
 
 
 # ---------------------------------------------------------------------------
@@ -1858,3 +1913,456 @@ def test_validation_page_excel_failure_does_not_crash(db_path, monkeypatch):
 def test_validation_page_without_import_has_no_excel_download(db_path):
     at = _open_validation_page()
     assert _download_buttons(at) == []
+
+
+# ---------------------------------------------------------------------------
+# 07 勤務表調整
+# ---------------------------------------------------------------------------
+
+SCHEDULE_PAGE = "pages/07_schedule.py"
+MANUAL_SAVE_BUTTON = "このスタッフの変更を保存"
+REGENERATE_BUTTON = "固定を守って再生成"
+APPLY_BUTTON = "再生成結果を反映"
+FINALIZE_BUTTON = "この日を確定"
+UNFINALIZE_BUTTON = "確定を解除"
+
+
+def _open_schedule_page():
+    at = AppTest.from_file(_page(SCHEDULE_PAGE), default_timeout=120)
+    at.run()
+    assert not at.exception
+    return at
+
+
+def _schedule_dates(at):
+    from src.period_utils import period_dates
+
+    start = at.session_state["schedule_period_start"]
+    days = at.session_state["schedule_period_days"]
+    return period_dates(start.isoformat(), int(days))
+
+
+def _seed_saved_schedule(db_path, required_total_staff=2, **staff_kwargs):
+    """生成→下書き保存まで済ませた状態を作り、(staff_ids, dates) を返す."""
+    ids = _seed_generation_staff(db_path, **staff_kwargs)
+    at = _open_generate_page()
+    dates = _generate_dates(at)
+    _seed_generation_requirements(
+        db_path, dates,
+        [
+            DailyRequirementInput(work_date=d, required_total_staff=required_total_staff)
+            for d in dates
+        ],
+    )
+    at = _open_generate_page()
+    _click_generate(at)
+    _save_draft(at)
+    return ids, dates
+
+
+def _click(at, label):
+    [b for b in at.button if b.label == label][0].click()
+    at.run()
+    assert not at.exception
+    return at
+
+
+def _schedule_grid(at):
+    return _table_with_column(at, "スタッフ")
+
+
+def _status_table(at):
+    return _table_with_column(at, "状態")
+
+
+def _assignment_rows(db_path, staff_id):
+    conn = get_connection(str(db_path))
+    rows = conn.execute(
+        "SELECT work_date, is_working, locked, source, start_time, end_time "
+        "FROM schedule_assignments WHERE staff_id = ? ORDER BY work_date",
+        (staff_id,),
+    ).fetchall()
+    conn.close()
+    return [tuple(r) for r in rows]
+
+
+def _day_status(db_path, work_date):
+    conn = get_connection(str(db_path))
+    row = conn.execute(
+        "SELECT status FROM schedule_days WHERE work_date = ?", (work_date,)
+    ).fetchone()
+    conn.close()
+    return row[0] if row else None
+
+
+def _select_staff(at, staff_id):
+    at.selectbox(key="schedule_staff").set_value(staff_id)
+    at.run()
+    assert not at.exception
+    return at
+
+
+def _input_key(at, staff_id, work_date, suffix):
+    """手修正欄のキー（スタッフと期間を含む）."""
+    start = at.session_state["schedule_period_start"]
+    days = int(at.session_state["schedule_period_days"])
+    return f"sched_{staff_id}_{start.isoformat()}x{days}_{work_date}_{suffix}"
+
+
+def test_schedule_page_without_a_saved_schedule(db_path):
+    _seed_generation_staff(db_path)
+    at = _open_schedule_page()
+    assert any("まだ作成されていません" in i.value for i in at.info)
+    assert all(b.label != REGENERATE_BUTTON for b in at.button)
+
+
+def test_schedule_page_shows_the_saved_schedule(db_path):
+    """§117: 保存済み勤務表が表示される."""
+    ids, dates = _seed_saved_schedule(db_path)
+    at = _open_schedule_page()
+
+    grid = _schedule_grid(at)
+    assert list(grid["スタッフ"])[1:] == ["リーダー田中", "清掃Aさん", "短時間Bさん"]
+    assert len(grid.columns) == len(dates) + 1
+    assert list(grid.iloc[0])[1:] == ["下書き"] * len(dates)
+    day_values = [str(v) for v in grid[grid.columns[1]][1:]]
+    assert any("09:00-15:30" in v for v in day_values)
+    assert ids
+
+
+def test_schedule_page_header_counts_days(db_path):
+    _, dates = _seed_saved_schedule(db_path)
+    at = _open_schedule_page()
+    metrics = {m.label: m.value for m in at.metric}
+    assert metrics["作成済み日数"] == f"{len(dates)} / {len(dates)}"
+    assert metrics["未作成日数"] == "0"
+    assert metrics["下書きの日数"] == str(len(dates))
+    assert metrics["確定済みの日数"] == "0"
+
+
+def test_schedule_page_shows_missing_days(db_path):
+    """§117: 未作成日が表示される."""
+    import datetime
+
+    _seed_saved_schedule(db_path)
+    at = _open_schedule_page()
+    dates = _schedule_dates(at)
+    at.selectbox(key="schedule_period_days").select(10)
+    at.run()
+    at.date_input(key="schedule_period_start").set_value(
+        datetime.date.fromisoformat(dates[-2])
+    )
+    at.run()
+    assert not at.exception
+
+    metrics = {m.label: m.value for m in at.metric}
+    assert metrics["未作成日数"] == "8"
+    assert any("未作成" in w.value for w in at.warning)
+    assert "未作成" in list(_status_table(at)["状態"])
+
+
+def test_schedule_page_changes_off_to_working(db_path):
+    """§117: 休→勤務を変更できる."""
+    ids, dates = _seed_saved_schedule(db_path, required_total_staff=1)
+    at = _open_schedule_page()
+    staff_id, off_date = _first_off_day(db_path, ids, dates)
+    _select_staff(at, staff_id)
+
+    at.checkbox(key=_input_key(at, staff_id, off_date, "working")).set_value(True)
+    at.run()
+    _click(at, MANUAL_SAVE_BUTTON)
+
+    saved = {r[0]: r for r in _assignment_rows(db_path, staff_id)}[off_date]
+    assert saved[1] == 1
+    assert saved[3] == "MANUAL"
+    assert (saved[4], saved[5]) is not (None, None)
+    assert any("更新しました" in s.value for s in at.success)
+
+
+def test_schedule_page_changes_working_to_off(db_path):
+    """§117: 勤務→休を変更できる."""
+    ids, dates = _seed_saved_schedule(db_path, required_total_staff=2)
+    at = _open_schedule_page()
+    staff_id, work_date = _first_working_day(db_path, ids, dates)
+    _select_staff(at, staff_id)
+
+    at.checkbox(key=_input_key(at, staff_id, work_date, "working")).set_value(False)
+    at.run()
+    _click(at, MANUAL_SAVE_BUTTON)
+
+    saved = {r[0]: r for r in _assignment_rows(db_path, staff_id)}[work_date]
+    assert saved[1] == 0
+    assert saved[3] == "MANUAL"
+    assert (saved[4], saved[5]) == (None, None)
+
+
+def test_schedule_page_locks_a_changed_day_by_default(db_path):
+    """§33: 手修正した日は固定ONが既定値（解除もできる）."""
+    ids, dates = _seed_saved_schedule(db_path, required_total_staff=2)
+    at = _open_schedule_page()
+    staff_id, work_date = _first_working_day(db_path, ids, dates)
+    _select_staff(at, staff_id)
+
+    at.checkbox(key=_input_key(at, staff_id, work_date, "working")).set_value(False)
+    at.run()
+    assert at.checkbox(key=_input_key(at, staff_id, work_date, "locked")).value is True
+
+    at.checkbox(key=_input_key(at, staff_id, work_date, "locked")).set_value(False)
+    at.run()
+    assert at.checkbox(key=_input_key(at, staff_id, work_date, "locked")).value is False
+
+
+def test_schedule_page_sets_a_lock_without_changing_the_work_state(db_path):
+    """§117: lock設定できる."""
+    ids, dates = _seed_saved_schedule(db_path, required_total_staff=2)
+    at = _open_schedule_page()
+    staff_id, work_date = _first_working_day(db_path, ids, dates)
+    _select_staff(at, staff_id)
+
+    at.checkbox(key=_input_key(at, staff_id, work_date, "locked")).set_value(True)
+    at.run()
+    _click(at, MANUAL_SAVE_BUTTON)
+
+    saved = {r[0]: r for r in _assignment_rows(db_path, staff_id)}[work_date]
+    assert (saved[1], saved[2]) == (1, 1)
+
+
+def test_schedule_page_marks_locked_cells_in_the_grid(db_path):
+    ids, dates = _seed_saved_schedule(db_path, required_total_staff=2)
+    at = _open_schedule_page()
+    staff_id, work_date = _first_working_day(db_path, ids, dates)
+    _select_staff(at, staff_id)
+    at.checkbox(key=_input_key(at, staff_id, work_date, "locked")).set_value(True)
+    at.run()
+    _click(at, MANUAL_SAVE_BUTTON)
+
+    grid = _schedule_grid(at)
+    column = [c for c in grid.columns if c != "スタッフ"][dates.index(work_date)]
+    assert any("🔒" in str(v) for v in grid[column])
+
+
+def test_schedule_page_switching_staff_does_not_carry_unsaved_input(db_path):
+    """別のスタッフを選んだとき、保存していない入力が持ち込まれないこと."""
+    ids, dates = _seed_saved_schedule(db_path, required_total_staff=2)
+    at = _open_schedule_page()
+    staff_id, work_date = _first_working_day(db_path, ids, dates)
+    before = _assignment_rows(db_path, staff_id)
+
+    _select_staff(at, staff_id)
+    at.checkbox(key=_input_key(at, staff_id, work_date, "working")).set_value(False)
+    at.run()
+
+    other = [i for i in ids.values() if i != staff_id][0]
+    saved_state = {r[0]: bool(r[1]) for r in _assignment_rows(db_path, other)}[work_date]
+    _select_staff(at, other)
+
+    # 別スタッフの欄はDBの保存値どおりで、前の入力が入っていない
+    assert at.checkbox(key=_input_key(at, other, work_date, "working")).value is saved_state
+    _click(at, MANUAL_SAVE_BUTTON)
+    assert any("変更はありません" in i.value for i in at.info)
+    assert _assignment_rows(db_path, staff_id) == before
+
+
+def test_schedule_page_discards_unsaved_input_when_staff_changes_back(db_path):
+    ids, dates = _seed_saved_schedule(db_path, required_total_staff=2)
+    at = _open_schedule_page()
+    staff_id, work_date = _first_working_day(db_path, ids, dates)
+
+    _select_staff(at, staff_id)
+    at.checkbox(key=_input_key(at, staff_id, work_date, "working")).set_value(False)
+    at.run()
+    other = [i for i in ids.values() if i != staff_id][0]
+    _select_staff(at, other)
+    _select_staff(at, staff_id)
+
+    _click(at, MANUAL_SAVE_BUTTON)
+    assert any("変更はありません" in i.value for i in at.info)
+    assert {r[0]: r[1] for r in _assignment_rows(db_path, staff_id)}[work_date] == 1
+
+
+def test_schedule_page_rejects_manual_working_on_an_absolute_off_day(db_path):
+    ids, dates = _seed_saved_schedule(db_path, required_total_staff=1)
+    staff_id, off_date = _first_off_day(db_path, ids, dates)
+    conn = get_connection(str(db_path))
+    repo.save_staff_period_preferences(
+        conn, staff_id, dates,
+        [StaffDatePreferenceInput(staff_id, off_date, absolute_off=True)],
+    )
+    conn.close()
+
+    at = _open_schedule_page()
+    _select_staff(at, staff_id)
+    at.checkbox(key=_input_key(at, staff_id, off_date, "working")).set_value(True)
+    at.run()
+    _click(at, MANUAL_SAVE_BUTTON)
+
+    assert at.error
+    saved = {r[0]: r for r in _assignment_rows(db_path, staff_id)}[off_date]
+    assert saved[1] == 0
+
+
+def test_schedule_page_preview_does_not_change_the_database(db_path):
+    """§117: previewではDB変更なし."""
+    ids, dates = _seed_saved_schedule(db_path, required_total_staff=1)
+    _seed_generation_requirements(
+        db_path, dates,
+        [DailyRequirementInput(work_date=d, required_total_staff=3) for d in dates],
+    )
+    before = {sid: _assignment_rows(db_path, sid) for sid in ids.values()}
+    runs_before = _schedule_counts(db_path)[0]
+
+    at = _open_schedule_page()
+    _click(at, REGENERATE_BUTTON)
+
+    assert {sid: _assignment_rows(db_path, sid) for sid in ids.values()} == before
+    assert _schedule_counts(db_path)[0] == runs_before
+    assert any(m.label == "変更されるセル" for m in at.metric)
+    assert any(b.label == APPLY_BUTTON for b in at.button)
+
+
+def test_schedule_page_applies_the_regenerated_schedule(db_path):
+    """§117: lockedを守ってpreview生成 → 反映ボタンでDB更新."""
+    ids, dates = _seed_saved_schedule(db_path, required_total_staff=1)
+    staff_id, off_date = _first_off_day(db_path, ids, dates)
+
+    at = _open_schedule_page()
+    _select_staff(at, staff_id)
+    at.checkbox(key=_input_key(at, staff_id, off_date, "locked")).set_value(True)
+    at.run()
+    _click(at, MANUAL_SAVE_BUTTON)
+
+    _seed_generation_requirements(
+        db_path, dates,
+        [DailyRequirementInput(work_date=d, required_total_staff=3) for d in dates],
+    )
+    at = _open_schedule_page()
+    _click(at, REGENERATE_BUTTON)
+    runs_before = _schedule_counts(db_path)[0]
+    _click(at, APPLY_BUTTON)
+
+    assert _schedule_counts(db_path)[0] == runs_before + 1
+    assert any("反映しました" in s.value for s in at.success)
+    locked_row = {r[0]: r for r in _assignment_rows(db_path, staff_id)}[off_date]
+    assert (locked_row[1], locked_row[2]) == (0, 1)      # 固定した休みは守られる
+
+
+def test_schedule_page_reports_a_conflicting_lock(db_path):
+    """§117/M19: 固定出勤とABSOLUTE_OFFの矛盾を表示し、固定を解除しない."""
+    ids, dates = _seed_saved_schedule(db_path, required_total_staff=2)
+    staff_id, work_date = _first_working_day(db_path, ids, dates)
+
+    at = _open_schedule_page()
+    _select_staff(at, staff_id)
+    at.checkbox(key=_input_key(at, staff_id, work_date, "locked")).set_value(True)
+    at.run()
+    _click(at, MANUAL_SAVE_BUTTON)
+
+    conn = get_connection(str(db_path))
+    repo.save_staff_period_preferences(
+        conn, staff_id, dates,
+        [StaffDatePreferenceInput(staff_id, work_date, absolute_off=True)],
+    )
+    conn.close()
+
+    at = _open_schedule_page()
+    _click(at, REGENERATE_BUTTON)
+
+    assert any("固定" in e.value for e in at.error)
+    assert all(b.label != APPLY_BUTTON or b.disabled for b in at.button)
+    row = {r[0]: r for r in _assignment_rows(db_path, staff_id)}[work_date]
+    assert (row[1], row[2]) == (1, 1)
+
+
+def test_schedule_page_finalizes_a_day(db_path):
+    """§117: FINALIZEDにできる."""
+    _, dates = _seed_saved_schedule(db_path)
+    at = _open_schedule_page()
+    at.selectbox(key="schedule_finalize_date").set_value(dates[0])
+    at.run()
+    _click(at, FINALIZE_BUTTON)
+
+    assert _day_status(db_path, dates[0]) == "FINALIZED"
+    assert "確定" in list(_status_table(at)["状態"])
+    assert {m.label: m.value for m in at.metric}["確定済みの日数"] == "1"
+
+
+def test_schedule_page_does_not_offer_to_edit_a_finalized_day(db_path):
+    """§117: FINALIZEDは編集不可."""
+    ids, dates = _seed_saved_schedule(db_path)
+    at = _open_schedule_page()
+    at.selectbox(key="schedule_finalize_date").set_value(dates[0])
+    at.run()
+    _click(at, FINALIZE_BUTTON)
+
+    first = list(ids.values())[0]
+    _select_staff(at, first)
+    assert _input_key(at, first, dates[0], "working") not in at.session_state
+    assert _input_key(at, first, dates[1], "working") in at.session_state
+
+
+def test_schedule_page_unfinalizes_a_day(db_path):
+    """§117: 確定解除できる."""
+    ids, dates = _seed_saved_schedule(db_path)
+    at = _open_schedule_page()
+    at.selectbox(key="schedule_finalize_date").set_value(dates[0])
+    at.run()
+    _click(at, FINALIZE_BUTTON)
+    _click(at, UNFINALIZE_BUTTON)
+
+    assert _day_status(db_path, dates[0]) == "DRAFT"
+    first = list(ids.values())[0]
+    _select_staff(at, first)
+    assert _input_key(at, first, dates[0], "working") in at.session_state
+
+
+def test_schedule_page_does_not_regenerate_a_finalized_day(db_path):
+    """M11: 確定した日は再生成の対象外."""
+    ids, dates = _seed_saved_schedule(db_path, required_total_staff=1)
+    at = _open_schedule_page()
+    at.selectbox(key="schedule_finalize_date").set_value(dates[0])
+    at.run()
+    _click(at, FINALIZE_BUTTON)
+    frozen = {
+        sid: {r[0]: r[1] for r in _assignment_rows(db_path, sid)}[dates[0]]
+        for sid in ids.values()
+    }
+
+    _seed_generation_requirements(
+        db_path, dates,
+        [DailyRequirementInput(work_date=d, required_total_staff=3) for d in dates],
+    )
+    at = _open_schedule_page()
+    _click(at, REGENERATE_BUTTON)
+    assert any("確定済み" in c.value for c in at.caption)
+    _click(at, APPLY_BUTTON)
+
+    assert {
+        sid: {r[0]: r[1] for r in _assignment_rows(db_path, sid)}[dates[0]]
+        for sid in ids.values()
+    } == frozen
+
+
+def test_schedule_page_does_not_write_actual_attendance(db_path):
+    """§65: 計画勤務表は attendance_shifts へ書かない."""
+    _seed_saved_schedule(db_path)
+    conn = get_connection(str(db_path))
+    count = conn.execute("SELECT count(*) FROM attendance_shifts").fetchone()[0]
+    conn.close()
+    assert count == 0
+
+
+def _first_off_day(db_path, ids, dates):
+    """(staff_id, work_date) で最初に休みのセルを返す."""
+    for staff_id in ids.values():
+        for work_date, is_working, *_ in _assignment_rows(db_path, staff_id):
+            if work_date in dates and not is_working:
+                return staff_id, work_date
+    raise AssertionError("休みのセルがありません")
+
+
+def _first_working_day(db_path, ids, dates):
+    for staff_id in ids.values():
+        for work_date, is_working, *_ in _assignment_rows(db_path, staff_id):
+            if work_date in dates and is_working:
+                return staff_id, work_date
+    raise AssertionError("出勤のセルがありません")

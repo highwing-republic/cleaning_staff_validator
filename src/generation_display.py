@@ -9,8 +9,12 @@ from src.constants import (
     GENERATION_STATUS_REQUIREMENT_MISSING,
     GENERATION_STATUS_SHORTAGE,
 )
+from src.constants import SCHEDULE_DAY_FINALIZED, SCHEDULE_SOURCE_MANUAL
 from src.models import (
     DailyGenerationResult,
+    ScheduleAssignmentRecord,
+    ScheduleChange,
+    ScheduleDayView,
     ScheduleGenerationResult,
     StaffGenerationSummary,
 )
@@ -103,4 +107,62 @@ def format_prefer_off_respect(result: ScheduleGenerationResult) -> str:
     if requested <= 0:
         return NOT_APPLICABLE
     return f"{result.prefer_off_respected_total} / {requested}"
+
+
+# ---------------------------------------------------------------------------
+# 現在の勤務表（Phase 10）
+# ---------------------------------------------------------------------------
+
+SCHEDULE_MISSING_LABEL = "未作成"
+SCHEDULE_DRAFT_LABEL = "下書き"
+SCHEDULE_FINALIZED_LABEL = "確定"
+LOCK_MARK = "🔒"
+MANUAL_MARK = "※"
+
+
+def format_schedule_day_status(view: ScheduleDayView) -> str:
+    """勤務表の日別状態（未作成 / 下書き / 確定）."""
+    if not view.exists:
+        return SCHEDULE_MISSING_LABEL
+    if view.is_finalized:
+        return SCHEDULE_FINALIZED_LABEL
+    return SCHEDULE_DRAFT_LABEL
+
+
+def format_schedule_cell(
+    assignment: ScheduleAssignmentRecord | None, day_is_finalized: bool = False
+) -> str:
+    """勤務表グリッドの1セル.
+
+    固定は 🔒、手修正は ※ を付ける。勤務表がない日は「未作成」。
+    確定日は日単位で読み取り専用なので、セルごとの印は付けない。
+    """
+    if assignment is None:
+        return SCHEDULE_MISSING_LABEL
+
+    if assignment.is_working and assignment.start_time and assignment.end_time:
+        text = f"{assignment.start_time}-{assignment.end_time}"
+    else:
+        text = OFF_LABEL
+
+    marks = ""
+    if assignment.locked and not day_is_finalized:
+        marks += LOCK_MARK
+    if assignment.source == SCHEDULE_SOURCE_MANUAL:
+        marks += MANUAL_MARK
+    return f"{marks}{text}" if marks else text
+
+
+def format_schedule_change(change: ScheduleChange) -> str:
+    """再生成プレビューの1行（例 '休 → 09:00-15:30'）."""
+    before = OFF_LABEL if not change.before_is_working else "出勤"
+    if change.after_is_working and change.after_start_time and change.after_end_time:
+        after = f"{change.after_start_time}-{change.after_end_time}"
+    else:
+        after = OFF_LABEL
+    return f"{before} → {after}"
+
+
+def format_work_state(is_working: bool) -> str:
+    return "出勤" if is_working else OFF_LABEL
 

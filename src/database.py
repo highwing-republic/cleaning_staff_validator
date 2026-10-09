@@ -7,6 +7,9 @@ from src.constants import (
     IMPORT_STATUS_ACTIVE,
     IMPORT_STATUSES,
     INITIAL_SPECIAL_SKILLS,
+    SCHEDULE_DAY_STATUSES,
+    SCHEDULE_RUN_TYPES,
+    SCHEDULE_SOURCES,
     SHIFT_TYPE_TIME_RANGE,
     SHIFT_TYPES,
     SKILL_LEVEL_DEFAULT,
@@ -325,6 +328,84 @@ def initialize_database(conn: sqlite3.Connection) -> None:
             """
             CREATE INDEX IF NOT EXISTS ix_attendance_shifts_import_date
             ON attendance_shifts (import_id, work_date)
+            """
+        )
+
+        # 勤務表（Phase 10）
+        # 生成の実行履歴。勤務表そのものの正本ではなく「いつどの期間をどう生成したか」のメタデータ
+        conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS schedule_runs (
+                run_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                period_start TEXT NOT NULL
+                    CHECK (period_start GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
+                           AND date(julianday(period_start)) IS period_start),
+                period_end TEXT NOT NULL
+                    CHECK (period_end GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
+                           AND date(julianday(period_end)) IS period_end
+                           AND period_end >= period_start),
+                run_type TEXT NOT NULL CHECK (run_type IN ({_sql_list(SCHEDULE_RUN_TYPES)})),
+                solver_status TEXT NOT NULL,
+                total_shortage INTEGER NOT NULL CHECK (total_shortage >= 0),
+                total_workdays INTEGER NOT NULL CHECK (total_workdays >= 0),
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+
+        # 日単位の状態。期間ではなく日で持つことで10〜14日のローリング運用に合わせる
+        # （期間が重なっても同じ日の勤務表が二重にならない）
+        conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS schedule_days (
+                work_date TEXT PRIMARY KEY
+                    CHECK (work_date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
+                           AND date(julianday(work_date)) IS work_date),
+                status TEXT NOT NULL CHECK (status IN ({_sql_list(SCHEDULE_DAY_STATUSES)})),
+                latest_run_id INTEGER NULL,
+                updated_at TEXT NOT NULL,
+                finalized_at TEXT NULL,
+                FOREIGN KEY (latest_run_id) REFERENCES schedule_runs (run_id)
+            )
+            """
+        )
+
+        # 現在運用中の勤務表。work_date × staff_id につき1件だけ持つ（Solver履歴とは分離）。
+        # 休みの日も is_working=0 で保存する（「この日は休みで固定」を表現するため）。
+        # start_time / end_time はsnapshot（後でスタッフマスターが変わっても勤務表は変わらない）
+        conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS schedule_assignments (
+                work_date TEXT NOT NULL
+                    CHECK (work_date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
+                           AND date(julianday(work_date)) IS work_date),
+                staff_id INTEGER NOT NULL,
+                is_working INTEGER NOT NULL CHECK (is_working IN (0, 1)),
+                start_time TEXT NULL
+                    CHECK (start_time IS NULL OR ({_hhmm_check('start_time')})),
+                end_time TEXT NULL
+                    CHECK (end_time IS NULL OR ({_hhmm_check('end_time')}
+                           AND (start_time IS NULL OR end_time > start_time))),
+                locked INTEGER NOT NULL DEFAULT 0 CHECK (locked IN (0, 1)),
+                source TEXT NOT NULL CHECK (source IN ({_sql_list(SCHEDULE_SOURCES)})),
+                source_run_id INTEGER NULL,
+                updated_at TEXT NOT NULL,
+                -- 出勤なら勤務時刻が必要、休みなら時刻を持たない
+                CHECK (
+                    (is_working = 1 AND start_time IS NOT NULL AND end_time IS NOT NULL)
+                    OR (is_working = 0 AND start_time IS NULL AND end_time IS NULL)
+                ),
+                PRIMARY KEY (work_date, staff_id),
+                FOREIGN KEY (work_date) REFERENCES schedule_days (work_date),
+                FOREIGN KEY (staff_id) REFERENCES staff (staff_id),
+                FOREIGN KEY (source_run_id) REFERENCES schedule_runs (run_id)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS ix_schedule_assignments_staff
+            ON schedule_assignments (staff_id, work_date)
             """
         )
 

@@ -5,6 +5,12 @@ from dataclasses import dataclass, field
 from src.constants import (
     GENERATION_STATUS_OK,
     GENERATION_STATUSES,
+    SCHEDULE_DAY_DRAFT,
+    SCHEDULE_DAY_FINALIZED,
+    SCHEDULE_DAY_STATUSES,
+    SCHEDULE_RUN_TYPES,
+    SCHEDULE_SOURCE_GENERATED,
+    SCHEDULE_SOURCES,
     IMPORT_STATUSES,
     SHIFT_TYPES,
     SKILL_LEVEL_DEFAULT,
@@ -442,12 +448,16 @@ class GenerationRequest:
 
     prior_work_history は staff_id -> 期間開始直前の勤務日（'YYYY-MM-DD'）の集合。
     期間境界をまたぐ連勤を正しく数えるために使う。
+    fixed_assignments は固定された勤務（手修正して固定した分と確定日の全スタッフ）。
     """
 
     work_dates: list[str]
     staff: list[GenerationStaff]
     days: list[GenerationDay]
     prior_work_history: dict[int, set[str]] = field(default_factory=dict)
+    # (staff_id, work_date) -> 1=出勤で固定 / 0=休みで固定. Hard Constraint として扱い、
+    # 公平性や希望休のために動かさない
+    fixed_assignments: dict[tuple[int, str], int] = field(default_factory=dict)
     time_limit_seconds: float | None = None
 
 
@@ -619,3 +629,187 @@ class ScheduleGenerationResult:
             if summary.staff_id == staff_id:
                 return summary
         return None
+
+
+# ---------------------------------------------------------------------------
+# 現在の勤務表（Phase 10）
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ScheduleRunRecord:
+    """生成の実行履歴. 勤務表そのものの正本ではない."""
+
+    run_id: int
+    period_start: str
+    period_end: str
+    run_type: str
+    solver_status: str
+    total_shortage: int
+    total_workdays: int
+    created_at: str
+
+    def __post_init__(self) -> None:
+        if self.run_type not in SCHEDULE_RUN_TYPES:
+            raise ValueError(f"invalid run_type: {self.run_type!r}")
+
+
+@dataclass(frozen=True)
+class ScheduleAssignmentRecord:
+    """現在の勤務表の1件（work_date × staff_id につき1件）.
+
+    休みの日も is_working=False で保持する（「この日は休みで固定」を表すため）。
+    start_time / end_time はsnapshot。スタッフマスターを後から変えても
+    すでに作成済みの勤務表の時刻は変わらない。
+    source_run_id は GENERATED のとき生成したrun、MANUAL のときはNULL
+    （手修正は特定のSolver結果に由来しないため）。
+    """
+
+    work_date: str
+    staff_id: int
+    is_working: bool
+    start_time: str | None = None
+    end_time: str | None = None
+    locked: bool = False
+    source: str = SCHEDULE_SOURCE_GENERATED
+    source_run_id: int | None = None
+    updated_at: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.source not in SCHEDULE_SOURCES:
+            raise ValueError(f"invalid source: {self.source!r}")
+        if self.is_working and not (self.start_time and self.end_time):
+            raise ValueError("working assignment requires start_time and end_time")
+        if not self.is_working and (self.start_time or self.end_time):
+            raise ValueError("day off must not have work times")
+
+
+@dataclass(frozen=True)
+class ScheduleDayRecord:
+    """勤務表の1日分の状態."""
+
+    work_date: str
+    status: str = SCHEDULE_DAY_DRAFT
+    latest_run_id: int | None = None
+    updated_at: str | None = None
+    finalized_at: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.status not in SCHEDULE_DAY_STATUSES:
+            raise ValueError(f"invalid status: {self.status!r}")
+
+    @property
+    def is_finalized(self) -> bool:
+        return self.status == SCHEDULE_DAY_FINALIZED
+
+
+@dataclass(frozen=True)
+class ScheduleDayView:
+    """画面向けの1日分. day=None は未作成（勤務表がまだない日）."""
+
+    work_date: str
+    day: ScheduleDayRecord | None = None
+    assignments: dict[int, ScheduleAssignmentRecord] = field(default_factory=dict)
+
+    @property
+    def exists(self) -> bool:
+        return self.day is not None
+
+    @property
+    def is_finalized(self) -> bool:
+        return self.day is not None and self.day.is_finalized
+
+    @property
+    def is_editable(self) -> bool:
+        """確定日は手修正・再生成の対象外."""
+        return self.exists and not self.is_finalized
+
+    @property
+    def working_count(self) -> int:
+        return sum(1 for a in self.assignments.values() if a.is_working)
+
+    @property
+    def locked_count(self) -> int:
+        return sum(1 for a in self.assignments.values() if a.locked)
+
+
+@dataclass(frozen=True)
+class CurrentScheduleView:
+    """対象期間の現在の勤務表."""
+
+    work_dates: list[str]
+    days: list[ScheduleDayView] = field(default_factory=list)
+
+    @property
+    def existing_dates(self) -> list[str]:
+        return [d.work_date for d in self.days if d.exists]
+
+    @property
+    def missing_dates(self) -> list[str]:
+        return [d.work_date for d in self.days if not d.exists]
+
+    @property
+    def draft_dates(self) -> list[str]:
+        return [d.work_date for d in self.days if d.exists and not d.is_finalized]
+
+    @property
+    def finalized_dates(self) -> list[str]:
+        return [d.work_date for d in self.days if d.is_finalized]
+
+    def day(self, work_date: str) -> ScheduleDayView | None:
+        for view in self.days:
+            if view.work_date == work_date:
+                return view
+        return None
+
+    def assignment(self, work_date: str, staff_id: int) -> ScheduleAssignmentRecord | None:
+        view = self.day(work_date)
+        return None if view is None else view.assignments.get(staff_id)
+
+
+@dataclass(frozen=True)
+class ScheduleChange:
+    """再生成プレビューで変わる1件（現在 → 再生成後）."""
+
+    work_date: str
+    staff_id: int
+    staff_name: str
+    before_is_working: bool
+    after_is_working: bool
+    after_start_time: str | None = None
+    after_end_time: str | None = None
+
+
+@dataclass(frozen=True)
+class FixedAssignmentConflict:
+    """固定された勤務と現在の勤務可能条件の矛盾.
+
+    固定を勝手に解除しないため、検出して利用者へ知らせるだけに留める。
+    """
+
+    work_date: str
+    staff_id: int
+    staff_name: str
+    reason: str
+
+
+@dataclass(frozen=True)
+class RegenerationPreview:
+    """再生成の下見. この時点ではDBを変更しない."""
+
+    work_dates: list[str]
+    result: ScheduleGenerationResult | None = None
+    changes: list[ScheduleChange] = field(default_factory=list)
+    conflicts: list[FixedAssignmentConflict] = field(default_factory=list)
+    target_dates: list[str] = field(default_factory=list)
+    skipped_finalized_dates: list[str] = field(default_factory=list)
+    errors: list[ValidationError] = field(default_factory=list)
+
+    @property
+    def can_apply(self) -> bool:
+        return not self.errors and self.result is not None and self.result.has_solution
+
+    @property
+    def change_count(self) -> int:
+        return len(self.changes)
+

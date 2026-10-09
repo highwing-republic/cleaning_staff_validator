@@ -14,6 +14,10 @@ EXPECTED_TABLES = {
     "daily_role_requirements",
     "attendance_imports",
     "attendance_shifts",
+    "staff_date_preferences",
+    "schedule_runs",
+    "schedule_days",
+    "schedule_assignments",
 }
 
 REMOVED_TABLES = {
@@ -21,7 +25,6 @@ REMOVED_TABLES = {
     "staff_monthly_conditions",
     "staff_day_preferences",
     "schedule_months",
-    "schedule_assignments",
 }
 
 
@@ -615,3 +618,217 @@ def test_weekday_pattern_foreign_key(conn):
                 "INSERT INTO staff_weekday_patterns (staff_id, weekday) VALUES (999, 0)"
             )
 
+
+
+# ---------------------------------------------------------------------------
+# 勤務表（Phase 10）
+# ---------------------------------------------------------------------------
+
+DATE = "2026-10-20"
+
+
+def _insert_day(conn, work_date=DATE, status="DRAFT"):
+    with conn:
+        conn.execute(
+            "INSERT INTO schedule_days (work_date, status, updated_at) VALUES (?, ?, '2026-10-01')",
+            (work_date, status),
+        )
+    return work_date
+
+
+def _insert_assignment(conn, staff_id, work_date=DATE, **kwargs):
+    values = {
+        "is_working": 1,
+        "start_time": "09:00",
+        "end_time": "15:30",
+        "locked": 0,
+        "source": "GENERATED",
+    }
+    values.update(kwargs)
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO schedule_assignments
+                (work_date, staff_id, is_working, start_time, end_time, locked, source, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, '2026-10-01')
+            """,
+            (
+                work_date,
+                staff_id,
+                values["is_working"],
+                values["start_time"],
+                values["end_time"],
+                values["locked"],
+                values["source"],
+            ),
+        )
+
+
+def test_schedule_runs_columns(conn):
+    assert _columns(conn, "schedule_runs") == [
+        "run_id",
+        "period_start",
+        "period_end",
+        "run_type",
+        "solver_status",
+        "total_shortage",
+        "total_workdays",
+        "created_at",
+    ]
+
+
+def test_schedule_days_columns(conn):
+    assert _columns(conn, "schedule_days") == [
+        "work_date",
+        "status",
+        "latest_run_id",
+        "updated_at",
+        "finalized_at",
+    ]
+
+
+def test_schedule_assignments_columns(conn):
+    assert _columns(conn, "schedule_assignments") == [
+        "work_date",
+        "staff_id",
+        "is_working",
+        "start_time",
+        "end_time",
+        "locked",
+        "source",
+        "source_run_id",
+        "updated_at",
+    ]
+
+
+def test_schedule_day_is_unique_per_date(conn):
+    """ローリング期間が重なっても同じ日の勤務表は1件だけ."""
+    _insert_day(conn)
+    with pytest.raises(sqlite3.IntegrityError):
+        _insert_day(conn)
+
+
+def test_schedule_assignment_is_unique_per_date_and_staff(conn):
+    staff_id = _insert_staff(conn)
+    _insert_day(conn)
+    _insert_assignment(conn, staff_id)
+    with pytest.raises(sqlite3.IntegrityError):
+        _insert_assignment(conn, staff_id)
+
+
+@pytest.mark.parametrize("status", ["draft", "ACTIVE", "", "FINAL"])
+def test_schedule_day_status_is_restricted(conn, status):
+    with pytest.raises(sqlite3.IntegrityError):
+        _insert_day(conn, status=status)
+
+
+@pytest.mark.parametrize("source", ["generated", "AUTO", ""])
+def test_schedule_assignment_source_is_restricted(conn, source):
+    staff_id = _insert_staff(conn)
+    _insert_day(conn)
+    with pytest.raises(sqlite3.IntegrityError):
+        _insert_assignment(conn, staff_id, source=source)
+
+
+@pytest.mark.parametrize("value", [-1, 2, 10])
+def test_schedule_assignment_is_working_is_boolean(conn, value):
+    staff_id = _insert_staff(conn)
+    _insert_day(conn)
+    with pytest.raises(sqlite3.IntegrityError):
+        _insert_assignment(conn, staff_id, is_working=value)
+
+
+@pytest.mark.parametrize("value", [-1, 2])
+def test_schedule_assignment_locked_is_boolean(conn, value):
+    staff_id = _insert_staff(conn)
+    _insert_day(conn)
+    with pytest.raises(sqlite3.IntegrityError):
+        _insert_assignment(conn, staff_id, locked=value)
+
+
+def test_working_assignment_requires_times(conn):
+    staff_id = _insert_staff(conn)
+    _insert_day(conn)
+    with pytest.raises(sqlite3.IntegrityError):
+        _insert_assignment(conn, staff_id, start_time=None, end_time=None)
+
+
+def test_off_assignment_rejects_times(conn):
+    staff_id = _insert_staff(conn)
+    _insert_day(conn)
+    with pytest.raises(sqlite3.IntegrityError):
+        _insert_assignment(conn, staff_id, is_working=0)
+
+
+def test_off_assignment_accepts_null_times(conn):
+    staff_id = _insert_staff(conn)
+    _insert_day(conn)
+    _insert_assignment(conn, staff_id, is_working=0, start_time=None, end_time=None)
+    assert conn.execute("SELECT count(*) FROM schedule_assignments").fetchone()[0] == 1
+
+
+def test_schedule_assignment_rejects_reversed_times(conn):
+    staff_id = _insert_staff(conn)
+    _insert_day(conn)
+    with pytest.raises(sqlite3.IntegrityError):
+        _insert_assignment(conn, staff_id, start_time="15:30", end_time="09:00")
+
+
+@pytest.mark.parametrize("value", ["9:00", "0900", "24:00", "09:60", ""])
+def test_schedule_assignment_rejects_invalid_time_format(conn, value):
+    staff_id = _insert_staff(conn)
+    _insert_day(conn)
+    with pytest.raises(sqlite3.IntegrityError):
+        _insert_assignment(conn, staff_id, start_time=value)
+
+
+@pytest.mark.parametrize("value", ["2026-13-01", "2026-02-30", "2026/10/20", "20261020"])
+def test_schedule_day_rejects_invalid_date(conn, value):
+    with pytest.raises(sqlite3.IntegrityError):
+        _insert_day(conn, work_date=value)
+
+
+def test_schedule_assignment_requires_existing_day(conn):
+    staff_id = _insert_staff(conn)
+    with pytest.raises(sqlite3.IntegrityError):
+        _insert_assignment(conn, staff_id)
+
+
+def test_schedule_assignment_requires_existing_staff(conn):
+    _insert_day(conn)
+    with pytest.raises(sqlite3.IntegrityError):
+        _insert_assignment(conn, 999)
+
+
+def test_schedule_day_latest_run_must_exist(conn):
+    with pytest.raises(sqlite3.IntegrityError):
+        with conn:
+            conn.execute(
+                "INSERT INTO schedule_days (work_date, status, latest_run_id, updated_at)"
+                " VALUES (?, 'DRAFT', 999, '2026-10-01')",
+                (DATE,),
+            )
+
+
+def test_schedule_run_type_is_restricted(conn):
+    with pytest.raises(sqlite3.IntegrityError):
+        with conn:
+            conn.execute(
+                "INSERT INTO schedule_runs (run_type, period_start, period_end, created_at)"
+                " VALUES ('AUTO', ?, ?, '2026-10-01')",
+                (DATE, DATE),
+            )
+
+
+def test_schedule_tables_survive_reinitialize(conn):
+    """何度initializeしても勤務表の行は消えない・重複しない."""
+    staff_id = _insert_staff(conn)
+    _insert_day(conn)
+    _insert_assignment(conn, staff_id)
+
+    initialize_database(conn)
+    initialize_database(conn)
+
+    assert conn.execute("SELECT count(*) FROM schedule_days").fetchone()[0] == 1
+    assert conn.execute("SELECT count(*) FROM schedule_assignments").fetchone()[0] == 1
+    assert _columns(conn, "schedule_assignments")[0] == "work_date"

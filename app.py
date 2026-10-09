@@ -12,6 +12,7 @@ USAGE_STEPS = [
     "④ 日別検証結果の確認・Excel出力",
     "⑤ 勤務希望入力（対象期間の「普段と違う希望だけ」を登録）",
     "⑥ シフト生成（勤務案の自動作成）",
+    "⑦ 勤務表調整（手修正・固定・再生成・日別確定）",
 ]
 
 
@@ -23,6 +24,7 @@ MENU_PAGES = [
     ("pages/04_validation.py", "④ 日別検証"),
     ("pages/05_preferences.py", "⑤ 勤務希望入力"),
     ("pages/06_generate.py", "⑥ シフト生成"),
+    ("pages/07_schedule.py", "⑦ 勤務表調整"),
 ]
 
 

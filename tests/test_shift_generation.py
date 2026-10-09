@@ -649,3 +649,101 @@ def test_reserved_rooms_does_not_affect_the_plan():
 def test_time_limit_is_accepted(limit):
     result = run([make_staff(1)], required(1), time_limit_seconds=limit)
     assert result.has_solution
+
+
+# ---------------------------------------------------------------------------
+# fixed_assignments（Phase 10・DB非依存）
+# ---------------------------------------------------------------------------
+
+
+def test_fixed_assignment_forces_work():
+    """固定出勤は総出勤日数を増やしてでも守る（Hard制約）."""
+    staff = [make_staff(1), make_staff(2), make_staff(3)]
+    result = run(staff, required(1), fixed_assignments={(3, THURSDAY): 1})
+    assert result.solver_status == SOLVER_STATUS_OPTIMAL
+    assert THURSDAY in worked_dates(result, 3)
+
+
+def test_fixed_off_forces_rest():
+    """固定休みは不足が出ても守る."""
+    staff = [make_staff(1)]
+    result = run(staff, required(1), fixed_assignments={(1, THURSDAY): 0})
+    assert result.has_solution
+    assert THURSDAY not in worked_dates(result, 1)
+    by_date = {d.work_date: d for d in result.days}
+    assert by_date[THURSDAY].staff_shortage == 1
+    assert by_date[FRIDAY].staff_shortage == 0
+
+
+def test_fixed_assignments_mixed_on_and_off():
+    staff = [make_staff(1), make_staff(2)]
+    result = run(
+        staff,
+        required(1),
+        fixed_assignments={(1, TUESDAY): 1, (2, TUESDAY): 1, (1, WEDNESDAY): 0},
+    )
+    assert result.has_solution
+    assert TUESDAY in worked_dates(result, 1)
+    assert TUESDAY in worked_dates(result, 2)
+    assert WEDNESDAY not in worked_dates(result, 1)
+
+
+def test_fixed_assignment_overrides_prefer_off():
+    """固定は公平性・希望休より優先する（Soft扱いにしない）."""
+    staff = [
+        make_staff(1, preferences={THURSDAY: pref(1, THURSDAY, prefer_off=True)}),
+        make_staff(2),
+    ]
+    result = run(staff, required(1), fixed_assignments={(1, THURSDAY): 1})
+    assert THURSDAY in worked_dates(result, 1)
+
+
+def test_fixed_assignment_overrides_target_days():
+    """固定出勤はtarget_days_per_weekより優先する."""
+    staff = [make_staff(1, target_days_per_week=1), make_staff(2)]
+    result = run(
+        staff,
+        required(1),
+        fixed_assignments={(1, d): 1 for d in DATES},
+    )
+    assert worked_dates(result, 1) == set(DATES)
+
+
+def test_fixed_work_on_unavailable_day_is_infeasible():
+    """ABSOLUTE_OFFの日に出勤固定 → 解なし（固定を黙って外さない）."""
+    staff = [
+        make_staff(1, preferences={THURSDAY: pref(1, THURSDAY, absolute_off=True)}),
+    ]
+    result = run(staff, required(1), fixed_assignments={(1, THURSDAY): 1})
+    assert not result.has_solution
+
+
+def test_fixed_assignment_outside_the_period_is_ignored():
+    staff = [make_staff(1)]
+    result = run(staff, required(1), fixed_assignments={(1, "2026-11-30"): 0})
+    assert result.has_solution
+    assert worked_dates(result, 1) == set(DATES)
+
+
+def test_fixed_assignment_for_unknown_staff_is_ignored():
+    staff = [make_staff(1)]
+    result = run(staff, required(1), fixed_assignments={(99, THURSDAY): 1})
+    assert result.has_solution
+
+
+def test_fixed_assignment_keeps_requirements_for_other_days():
+    staff = [make_staff(1), make_staff(2)]
+    result = run(staff, required(2), fixed_assignments={(1, TUESDAY): 1})
+    assert result.total_shortage == 0
+    assert all(d.scheduled_staff_count == 2 for d in result.days)
+
+
+def test_no_fixed_assignments_matches_plain_generation():
+    """固定なしなら従来の生成結果と同じ（Phase 9の挙動を変えない）."""
+    staff = [make_staff(i) for i in (1, 2, 3)]
+    plain = run(staff, required(2))
+    empty = run(staff, required(2), fixed_assignments={})
+    assert [d.scheduled_staff_count for d in plain.days] == [
+        d.scheduled_staff_count for d in empty.days
+    ]
+    assert plain.total_shortage == empty.total_shortage

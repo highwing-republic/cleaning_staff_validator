@@ -5,24 +5,42 @@ UIはこのモジュール経由でDB・解析・検証を組み合わせる。
 
 import dataclasses
 import sqlite3
+from datetime import timedelta
 
 from src import repositories as repo
 from src.attendance_import import is_cleaning_department, parse_attendance_csv
-from src.constants import SHIFT_TYPE_BLANK, SHIFT_TYPE_UNKNOWN
-from src.day_conditions import resolve_period_conditions
+from src.constants import (
+    SHIFT_TYPE_BLANK,
+    SHIFT_TYPE_UNKNOWN,
+)
+from src.constants import (
+    SCHEDULE_DAY_FINALIZED,
+    SCHEDULE_RUN_INITIAL,
+    SCHEDULE_SOURCE_GENERATED,
+    SCHEDULE_SOURCE_MANUAL,
+    TIME_STATUS_OK,
+)
+from src.day_conditions import resolve_period_conditions, resolve_staff_day_condition
+from src.period_utils import parse_date
 from src.models import (
     AttendanceParseResult,
     AttendancePreview,
     AttendanceShiftInput,
     DailyRequirementInput,
     DailyRequirementView,
+    FixedAssignmentConflict,
     GenerationDay,
     GenerationRequest,
     GenerationStaff,
     ImportIssue,
     MonthlyValidationResult,
+    RegenerationPreview,
     RoleRequirementInput,
+    ScheduleAssignmentRecord,
+    ScheduleChange,
+    ScheduleDayView,
     ScheduleGenerationResult,
+    CurrentScheduleView,
     SpecialSkill,
     StaffDatePreferenceInput,
     StaffDayCondition,
@@ -34,6 +52,15 @@ from src.shift_generation import generate_shift
 from src.staffing_validation import validate_month_staffing
 from src.validation import (
     PREFERENCE_STAFF_NOT_FOUND,
+    SCHEDULE_ALREADY_EXISTS,
+    SCHEDULE_ASSIGNMENT_NOT_FOUND,
+    SCHEDULE_DATE_OUT_OF_PERIOD,
+    SCHEDULE_DAY_FINALIZED_READONLY,
+    SCHEDULE_DAY_NOT_FOUND,
+    SCHEDULE_NOTHING_TO_REGENERATE,
+    SCHEDULE_STAFF_NOT_FOUND,
+    SCHEDULE_STAFF_UNAVAILABLE,
+    SCHEDULE_WORK_TIME_UNRESOLVED,
     STAFF_SPECIAL_SKILL_NOT_FOUND,
     validate_period_requirements,
     validate_staff,
@@ -517,4 +544,508 @@ def generate_schedule(
         conn, work_dates, prior_work_history, time_limit_seconds
     )
     return generate_shift(request)
+
+
+# ---------------------------------------------------------------------------
+# 現在の勤務表（Phase 10）
+# ---------------------------------------------------------------------------
+
+# 連勤の期間境界判定でどこまで遡るか（スタッフ個別の上限が未設定のときの既定）
+DEFAULT_PRIOR_LOOKBACK_DAYS = 7
+
+
+def get_current_schedule(
+    conn: sqlite3.Connection, work_dates: list[str]
+) -> CurrentScheduleView:
+    """対象期間の現在の勤務表を返す（Solverは実行しない）.
+
+    勤務表がない日は day=None（未作成）として返す。
+    """
+    if not work_dates:
+        return CurrentScheduleView(work_dates=[])
+
+    first, last = work_dates[0], work_dates[-1]
+    days = {d.work_date: d for d in repo.list_schedule_days(conn, first, last)}
+    assignments: dict[str, dict[int, ScheduleAssignmentRecord]] = {}
+    for assignment in repo.list_schedule_assignments(conn, first, last):
+        assignments.setdefault(assignment.work_date, {})[assignment.staff_id] = assignment
+
+    return CurrentScheduleView(
+        work_dates=list(work_dates),
+        days=[
+            ScheduleDayView(
+                work_date=work_date,
+                day=days.get(work_date),
+                assignments=assignments.get(work_date, {}),
+            )
+            for work_date in work_dates
+        ],
+    )
+
+
+def _to_assignment_records(
+    result: ScheduleGenerationResult,
+    locked_by_key: dict[tuple[str, int], ScheduleAssignmentRecord] | None = None,
+) -> list[ScheduleAssignmentRecord]:
+    """生成結果を勤務表のレコードへ変換する（勤務時刻はsnapshotとして保存）."""
+    records = []
+    for assignment in result.assignments:
+        existing = (locked_by_key or {}).get((assignment.work_date, assignment.staff_id))
+        records.append(
+            ScheduleAssignmentRecord(
+                work_date=assignment.work_date,
+                staff_id=assignment.staff_id,
+                is_working=assignment.is_working,
+                start_time=assignment.start_time if assignment.is_working else None,
+                end_time=assignment.end_time if assignment.is_working else None,
+                locked=bool(existing.locked) if existing else False,
+                source=SCHEDULE_SOURCE_GENERATED,
+            )
+        )
+    return records
+
+
+def save_generated_schedule(
+    conn: sqlite3.Connection,
+    work_dates: list[str],
+    result: ScheduleGenerationResult,
+) -> tuple[int | None, list[ValidationError]]:
+    """生成結果を下書きとして保存する（run_id, エラー）を返す.
+
+    既存の勤務表がある日を含む場合は保存しない。無理にマージすると
+    確定日や固定した勤務を取り違える恐れがあるため、勤務表調整画面からの
+    再生成へ案内する。
+    """
+    if not result.has_solution:
+        return None, [
+            ValidationError(
+                code=SCHEDULE_NOTHING_TO_REGENERATE,
+                message="保存できる勤務案がありません。先に勤務案を作成してください。",
+            )
+        ]
+
+    existing = get_current_schedule(conn, work_dates).existing_dates
+    if existing:
+        return None, [
+            ValidationError(
+                code=SCHEDULE_ALREADY_EXISTS,
+                message=(
+                    f"すでに勤務表がある日が{len(existing)}日あります"
+                    "（勤務表調整画面から「固定を守って再生成」してください）。"
+                ),
+                work_date=existing[0],
+            )
+        ]
+
+    run_id = repo.save_initial_schedule(
+        conn,
+        work_dates,
+        _to_assignment_records(result),
+        SCHEDULE_RUN_INITIAL,
+        result.solver_status,
+        result.total_shortage,
+        result.total_workdays,
+    )
+    return run_id, []
+
+
+# ---------------------------------------------------------------------------
+# 手修正
+# ---------------------------------------------------------------------------
+
+
+def validate_manual_schedule_changes(
+    conn: sqlite3.Connection,
+    staff_id: int,
+    changes: dict[str, tuple[bool, bool]],
+) -> list[ValidationError]:
+    """手修正の検証. changes は work_date -> (出勤するか, 固定するか).
+
+    休み→出勤はHard Constraintを破れないので、勤務可能で勤務時刻が確定する日だけ許す。
+    出勤→休みは必要人数が不足しても許可する（不足は画面で確認できる）。
+    """
+    detail = repo.get_staff_detail(conn, staff_id)
+    if detail is None:
+        return [
+            ValidationError(
+                code=SCHEDULE_STAFF_NOT_FOUND,
+                message="対象のスタッフが見つかりません。",
+                staff_id=staff_id,
+                field_name="staff_id",
+            )
+        ]
+
+    errors: list[ValidationError] = []
+    preferences = {
+        p.work_date: p
+        for p in repo.list_staff_preferences(
+            conn, staff_id, min(changes), max(changes)
+        )
+    } if changes else {}
+
+    for work_date, (is_working, _locked) in sorted(changes.items()):
+        day = repo.get_schedule_day(conn, work_date)
+        if day is None:
+            errors.append(
+                ValidationError(
+                    code=SCHEDULE_DAY_NOT_FOUND,
+                    message="この日の勤務表がまだ作成されていません。",
+                    staff_id=staff_id,
+                    work_date=work_date,
+                )
+            )
+            continue
+        if day.is_finalized:
+            errors.append(
+                ValidationError(
+                    code=SCHEDULE_DAY_FINALIZED_READONLY,
+                    message="確定済みの日は変更できません（確定を解除してください）。",
+                    staff_id=staff_id,
+                    work_date=work_date,
+                )
+            )
+            continue
+        if repo.get_schedule_assignment(conn, work_date, staff_id) is None:
+            errors.append(
+                ValidationError(
+                    code=SCHEDULE_ASSIGNMENT_NOT_FOUND,
+                    message="この日のこのスタッフの勤務表が見つかりません。",
+                    staff_id=staff_id,
+                    work_date=work_date,
+                )
+            )
+            continue
+
+        if not is_working:
+            continue
+
+        condition = resolve_staff_day_condition(detail, work_date, preferences.get(work_date))
+        if not condition.can_work:
+            errors.append(
+                ValidationError(
+                    code=SCHEDULE_STAFF_UNAVAILABLE,
+                    message=(
+                        "この日は勤務できません"
+                        "（絶対休み、または通常勤務しない曜日です）。"
+                    ),
+                    staff_id=staff_id,
+                    work_date=work_date,
+                )
+            )
+        elif condition.time_status != TIME_STATUS_OK:
+            errors.append(
+                ValidationError(
+                    code=SCHEDULE_WORK_TIME_UNRESOLVED,
+                    message=(
+                        "この日の勤務時間を確定できません"
+                        "（通常勤務時間を登録してください）。"
+                    ),
+                    staff_id=staff_id,
+                    work_date=work_date,
+                )
+            )
+
+    return errors
+
+
+def save_manual_schedule_changes(
+    conn: sqlite3.Connection,
+    staff_id: int,
+    changes: dict[str, tuple[bool, bool]],
+) -> list[ValidationError]:
+    """手修正を保存する（検証に通った場合のみ1トランザクション）.
+
+    勤務時刻は resolve_staff_day_condition の実効時間から決める
+    （Phase 10では時刻の直接入力は行わない）。
+    """
+    if not changes:
+        return []
+
+    errors = validate_manual_schedule_changes(conn, staff_id, changes)
+    if errors:
+        return errors
+
+    detail = repo.get_staff_detail(conn, staff_id)
+    preferences = {
+        p.work_date: p
+        for p in repo.list_staff_preferences(conn, staff_id, min(changes), max(changes))
+    }
+
+    records = []
+    for work_date, (is_working, locked) in sorted(changes.items()):
+        if is_working:
+            condition = resolve_staff_day_condition(
+                detail, work_date, preferences.get(work_date)
+            )
+            start_time = condition.effective_start_time
+            end_time = condition.effective_end_time
+        else:
+            start_time = end_time = None
+        records.append(
+            ScheduleAssignmentRecord(
+                work_date=work_date,
+                staff_id=staff_id,
+                is_working=is_working,
+                start_time=start_time,
+                end_time=end_time,
+                locked=locked,
+                source=SCHEDULE_SOURCE_MANUAL,
+            )
+        )
+
+    repo.save_staff_manual_changes(conn, staff_id, records)
+    return []
+
+
+# ---------------------------------------------------------------------------
+# 再生成（固定を守る）
+# ---------------------------------------------------------------------------
+
+
+def build_regeneration_request(
+    conn: sqlite3.Connection,
+    work_dates: list[str],
+    schedule: CurrentScheduleView | None = None,
+    time_limit_seconds: float | None = None,
+) -> GenerationRequest:
+    """現在の勤務表の固定・確定を反映した再生成の入力を作る.
+
+    DRAFT日は locked のセルだけ固定、確定日はその日の全スタッフを固定する。
+    連勤の期間境界は確定済みの勤務表から求める（DRAFTは使わない）。
+    """
+    current = schedule or get_current_schedule(conn, work_dates)
+    fixed: dict[tuple[int, str], int] = {}
+
+    for view in current.days:
+        if not view.exists:
+            continue
+        for staff_id, assignment in view.assignments.items():
+            if view.is_finalized or assignment.locked:
+                fixed[(staff_id, view.work_date)] = int(assignment.is_working)
+
+    request = build_generation_request(
+        conn,
+        work_dates,
+        prior_work_history=build_prior_work_history(conn, work_dates),
+        time_limit_seconds=time_limit_seconds,
+    )
+    return dataclasses.replace(request, fixed_assignments=fixed)
+
+
+def build_prior_work_history(
+    conn: sqlite3.Connection, work_dates: list[str]
+) -> dict[int, set[str]]:
+    """対象期間の直前について、確定済みの勤務日を staff_id ごとに返す.
+
+    遡る日数はスタッフの最大連勤日数の最大値で足りる。
+    DRAFTの日は含めない（まだ変更される可能性があるため）。
+    """
+    if not work_dates:
+        return {}
+
+    limits = [
+        detail.staff.max_consecutive_days
+        for detail in repo.list_staff_details(conn, include_inactive=False)
+        if detail.staff.max_consecutive_days
+    ]
+    lookback = max(limits) if limits else DEFAULT_PRIOR_LOOKBACK_DAYS
+
+    start = parse_date(work_dates[0])
+    if start is None:
+        return {}
+    first = (start - timedelta(days=lookback)).isoformat()
+    last = (start - timedelta(days=1)).isoformat()
+    return repo.list_finalized_working_dates(conn, first, last)
+
+
+def _detect_fixed_conflicts(
+    request: GenerationRequest,
+) -> list[FixedAssignmentConflict]:
+    """固定された勤務と現在の勤務可能条件の矛盾を検出する（解除はしない）."""
+    staff_by_id = {staff.staff_id: staff for staff in request.staff}
+    conflicts: list[FixedAssignmentConflict] = []
+
+    for (staff_id, work_date), value in sorted(request.fixed_assignments.items()):
+        if not value:
+            continue
+        staff = staff_by_id.get(staff_id)
+        if staff is None:
+            continue
+        condition = staff.day_conditions.get(work_date)
+        if condition is None:
+            continue
+        if not condition.can_work:
+            reason = "勤務できない日（絶対休み、または通常勤務しない曜日）に出勤で固定されています。"
+        elif condition.time_status != TIME_STATUS_OK:
+            reason = "勤務時間を確定できない日に出勤で固定されています。"
+        else:
+            continue
+        conflicts.append(
+            FixedAssignmentConflict(
+                work_date=work_date,
+                staff_id=staff_id,
+                staff_name=staff.staff_name,
+                reason=reason,
+            )
+        )
+    return conflicts
+
+
+def preview_regenerated_schedule(
+    conn: sqlite3.Connection,
+    work_dates: list[str],
+    time_limit_seconds: float | None = None,
+) -> RegenerationPreview:
+    """再生成の下見を作る（DBは一切変更しない）."""
+    current = get_current_schedule(conn, work_dates)
+    target_dates = current.draft_dates
+
+    if not current.existing_dates:
+        return RegenerationPreview(
+            work_dates=list(work_dates),
+            errors=[
+                ValidationError(
+                    code=SCHEDULE_DAY_NOT_FOUND,
+                    message="対象期間に勤務表がありません。先に勤務案を下書き保存してください。",
+                )
+            ],
+        )
+    if not target_dates:
+        return RegenerationPreview(
+            work_dates=list(work_dates),
+            skipped_finalized_dates=current.finalized_dates,
+            errors=[
+                ValidationError(
+                    code=SCHEDULE_NOTHING_TO_REGENERATE,
+                    message="対象期間はすべて確定済みです（確定を解除すると再生成できます）。",
+                )
+            ],
+        )
+
+    request = build_regeneration_request(
+        conn, work_dates, schedule=current, time_limit_seconds=time_limit_seconds
+    )
+    conflicts = _detect_fixed_conflicts(request)
+    result = generate_shift(request)
+
+    changes: list[ScheduleChange] = []
+    if result.has_solution:
+        staff_names = {s.staff_id: s.staff_name for s in request.staff}
+        for assignment in result.assignments:
+            view = current.day(assignment.work_date)
+            if view is None or not view.is_editable:
+                continue
+            existing = view.assignments.get(assignment.staff_id)
+            if existing is None or existing.locked:
+                continue
+            if existing.is_working == assignment.is_working:
+                continue
+            changes.append(
+                ScheduleChange(
+                    work_date=assignment.work_date,
+                    staff_id=assignment.staff_id,
+                    staff_name=staff_names.get(assignment.staff_id, str(assignment.staff_id)),
+                    before_is_working=existing.is_working,
+                    after_is_working=assignment.is_working,
+                    after_start_time=assignment.start_time,
+                    after_end_time=assignment.end_time,
+                )
+            )
+
+    return RegenerationPreview(
+        work_dates=list(work_dates),
+        result=result,
+        changes=changes,
+        conflicts=conflicts,
+        target_dates=target_dates,
+        skipped_finalized_dates=current.finalized_dates,
+    )
+
+
+def apply_regenerated_schedule(
+    conn: sqlite3.Connection,
+    work_dates: list[str],
+    preview: RegenerationPreview,
+) -> tuple[int | None, list[ValidationError]]:
+    """再生成結果を反映する（run_id, エラー）を返す.
+
+    更新するのはDRAFT日の固定されていないセルだけ。
+    固定されたセルと確定日は現在値をそのまま残す。
+    """
+    if not preview.can_apply:
+        return None, preview.errors or [
+            ValidationError(
+                code=SCHEDULE_NOTHING_TO_REGENERATE,
+                message="反映できる再生成結果がありません。",
+            )
+        ]
+
+    current = get_current_schedule(conn, work_dates)
+    records: list[ScheduleAssignmentRecord] = []
+
+    for assignment in preview.result.assignments:
+        view = current.day(assignment.work_date)
+        if view is None or not view.is_editable:
+            continue
+        existing = view.assignments.get(assignment.staff_id)
+        if existing is None or existing.locked:
+            continue
+        records.append(
+            ScheduleAssignmentRecord(
+                work_date=assignment.work_date,
+                staff_id=assignment.staff_id,
+                is_working=assignment.is_working,
+                start_time=assignment.start_time if assignment.is_working else None,
+                end_time=assignment.end_time if assignment.is_working else None,
+                locked=False,
+                source=SCHEDULE_SOURCE_GENERATED,
+            )
+        )
+
+    run_id = repo.apply_regenerated_schedule(
+        conn,
+        work_dates,
+        records,
+        preview.result.solver_status,
+        preview.result.total_shortage,
+        preview.result.total_workdays,
+    )
+    return run_id, []
+
+
+# ---------------------------------------------------------------------------
+# 日別の確定
+# ---------------------------------------------------------------------------
+
+
+def finalize_schedule_day(
+    conn: sqlite3.Connection, work_date: str
+) -> list[ValidationError]:
+    day = repo.get_schedule_day(conn, work_date)
+    if day is None:
+        return [
+            ValidationError(
+                code=SCHEDULE_DAY_NOT_FOUND,
+                message="この日の勤務表がまだ作成されていません。",
+                work_date=work_date,
+            )
+        ]
+    repo.finalize_schedule_day(conn, work_date)
+    return []
+
+
+def unfinalize_schedule_day(
+    conn: sqlite3.Connection, work_date: str
+) -> list[ValidationError]:
+    day = repo.get_schedule_day(conn, work_date)
+    if day is None:
+        return [
+            ValidationError(
+                code=SCHEDULE_DAY_NOT_FOUND,
+                message="この日の勤務表がまだ作成されていません。",
+                work_date=work_date,
+            )
+        ]
+    repo.unfinalize_schedule_day(conn, work_date)
+    return []
 

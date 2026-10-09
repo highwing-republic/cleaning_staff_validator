@@ -10,7 +10,9 @@
 必要な人数だけを配置したうえで、同じ条件なら希望休を出していないスタッフを
 優先し、各スタッフの目標勤務日数へ近づける。希望休の日に勤務したことや
 目標勤務日数からの差は制約違反ではないため、警告ではなくスタッフ別の一覧で示す。
-生成結果はDBへ保存しない（画面表示のみ）。
+作成した勤務案は「下書き保存」でDBへ保存し、以降の手修正・固定・再生成・確定は
+「⑦ 勤務表調整」で行う。すでに勤務表がある日を含む期間はここから上書きしない
+（確定済みの日や固定した勤務を取り違えないため、調整画面からの再生成へ案内する）。
 """
 
 import pandas as pd
@@ -33,7 +35,7 @@ from src.generation_display import (
 )
 from src.period_utils import format_date_short, period_dates
 from src.requirement_display import count_defined, count_undefined
-from src.ui_common import open_connection, select_period
+from src.ui_common import open_connection, select_period, show_errors
 
 st.set_page_config(page_title="シフト生成", layout="wide")
 st.title("⑥ シフト生成")
@@ -44,6 +46,11 @@ st.caption(
 )
 
 conn = open_connection()
+
+# 保存後は st.rerun() で画面を作り直すため、完了メッセージはsession_state経由で持ち越す
+FLASH_KEY = "_generation_flash"
+if FLASH_KEY in st.session_state:
+    st.success(st.session_state.pop(FLASH_KEY))
 
 start_date, days = select_period("generation_period")
 dates = period_dates(start_date, days)
@@ -224,7 +231,33 @@ daily = pd.DataFrame(
     ]
 )
 st.dataframe(daily, width="stretch", hide_index=True)
-st.caption(
-    "この勤務案は保存されません（期間を変えると消えます）。"
-    "手修正・固定して再作成は後続のPhaseで追加します。"
-)
+# ---------------------------------------------------------------------------
+# 下書き保存
+# ---------------------------------------------------------------------------
+
+st.subheader("保存")
+
+existing_dates = services.get_current_schedule(conn, dates).existing_dates
+if existing_dates:
+    st.info(
+        f"この期間にはすでに勤務表がある日が{len(existing_dates)}日あります"
+        f"（{format_date_short(existing_dates[0])}〜{format_date_short(existing_dates[-1])}）。"
+        "確定した日や固定した勤務を消さないよう、ここからは保存しません。"
+        "すでにある日を変更する場合は「⑦ 勤務表調整」から、"
+        f"続きを作る場合は開始日を {format_date_short(existing_dates[-1])} の翌日以降にしてください。"
+    )
+else:
+    st.caption(
+        "下書き保存すると、以降は「⑦ 勤務表調整」で手修正・固定・再生成・確定ができます。"
+        "保存しない場合、この勤務案は期間を変えると消えます。"
+    )
+    if st.button("勤務案を下書き保存", type="primary"):
+        run_id, save_errors = services.save_generated_schedule(conn, dates, result)
+        if save_errors:
+            show_errors(save_errors)
+        else:
+            st.session_state[FLASH_KEY] = (
+                f"勤務案を下書き保存しました（{dates[0]} 〜 {dates[-1]}）。"
+                "「⑦ 勤務表調整」で変更できます。"
+            )
+            st.rerun()

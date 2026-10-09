@@ -4,12 +4,15 @@
 ただし本ファイル内で明示された検査のみ行う。
 """
 
+import dataclasses
 import sqlite3
 from datetime import datetime
 
 from src.constants import (
     IMPORT_STATUS_ACTIVE,
     IMPORT_STATUS_SUPERSEDED,
+    SCHEDULE_DAY_DRAFT,
+    SCHEDULE_DAY_FINALIZED,
     SHIFT_TYPE_BLANK,
     SKILL_LEVEL_DEFAULT,
 )
@@ -18,6 +21,9 @@ from src.models import (
     AttendanceShiftInput,
     DailyRequirementInput,
     RoleRequirementInput,
+    ScheduleAssignmentRecord,
+    ScheduleDayRecord,
+    ScheduleRunRecord,
     SpecialSkill,
     StaffDatePreferenceInput,
     StaffDetail,
@@ -815,3 +821,339 @@ def list_attendance_shifts(
         )
         for row in rows
     ]
+
+
+# ---------------------------------------------------------------------------
+# 現在の勤務表（Phase 10）
+# ---------------------------------------------------------------------------
+
+
+def _row_to_schedule_run(row: sqlite3.Row) -> ScheduleRunRecord:
+    return ScheduleRunRecord(
+        run_id=row["run_id"],
+        period_start=row["period_start"],
+        period_end=row["period_end"],
+        run_type=row["run_type"],
+        solver_status=row["solver_status"],
+        total_shortage=row["total_shortage"],
+        total_workdays=row["total_workdays"],
+        created_at=row["created_at"],
+    )
+
+
+def _row_to_schedule_day(row: sqlite3.Row) -> ScheduleDayRecord:
+    return ScheduleDayRecord(
+        work_date=row["work_date"],
+        status=row["status"],
+        latest_run_id=row["latest_run_id"],
+        updated_at=row["updated_at"],
+        finalized_at=row["finalized_at"],
+    )
+
+
+def _row_to_schedule_assignment(row: sqlite3.Row) -> ScheduleAssignmentRecord:
+    return ScheduleAssignmentRecord(
+        work_date=row["work_date"],
+        staff_id=row["staff_id"],
+        is_working=bool(row["is_working"]),
+        start_time=row["start_time"],
+        end_time=row["end_time"],
+        locked=bool(row["locked"]),
+        source=row["source"],
+        source_run_id=row["source_run_id"],
+        updated_at=row["updated_at"],
+    )
+
+
+def get_schedule_run(conn: sqlite3.Connection, run_id: int) -> ScheduleRunRecord | None:
+    row = conn.execute(
+        "SELECT * FROM schedule_runs WHERE run_id = ?", (run_id,)
+    ).fetchone()
+    return None if row is None else _row_to_schedule_run(row)
+
+
+def list_schedule_runs(conn: sqlite3.Connection, limit: int = 20) -> list[ScheduleRunRecord]:
+    """生成の実行履歴を新しい順に返す."""
+    rows = conn.execute(
+        "SELECT * FROM schedule_runs ORDER BY run_id DESC LIMIT ?", (limit,)
+    ).fetchall()
+    return [_row_to_schedule_run(row) for row in rows]
+
+
+def get_schedule_day(conn: sqlite3.Connection, work_date: str) -> ScheduleDayRecord | None:
+    """1日分の勤務表の状態. 行がなければNone（= その日は未作成）."""
+    row = conn.execute(
+        "SELECT * FROM schedule_days WHERE work_date = ?", (work_date,)
+    ).fetchone()
+    return None if row is None else _row_to_schedule_day(row)
+
+
+def list_schedule_days(
+    conn: sqlite3.Connection, start_date: str, end_date: str
+) -> list[ScheduleDayRecord]:
+    rows = conn.execute(
+        "SELECT * FROM schedule_days WHERE work_date BETWEEN ? AND ? ORDER BY work_date",
+        (start_date, end_date),
+    ).fetchall()
+    return [_row_to_schedule_day(row) for row in rows]
+
+
+def get_schedule_assignment(
+    conn: sqlite3.Connection, work_date: str, staff_id: int
+) -> ScheduleAssignmentRecord | None:
+    row = conn.execute(
+        "SELECT * FROM schedule_assignments WHERE work_date = ? AND staff_id = ?",
+        (work_date, staff_id),
+    ).fetchone()
+    return None if row is None else _row_to_schedule_assignment(row)
+
+
+def list_schedule_assignments(
+    conn: sqlite3.Connection, start_date: str, end_date: str
+) -> list[ScheduleAssignmentRecord]:
+    rows = conn.execute(
+        "SELECT * FROM schedule_assignments WHERE work_date BETWEEN ? AND ? "
+        "ORDER BY work_date, staff_id",
+        (start_date, end_date),
+    ).fetchall()
+    return [_row_to_schedule_assignment(row) for row in rows]
+
+
+def list_staff_schedule_assignments(
+    conn: sqlite3.Connection, staff_id: int, start_date: str, end_date: str
+) -> list[ScheduleAssignmentRecord]:
+    rows = conn.execute(
+        "SELECT * FROM schedule_assignments WHERE staff_id = ? AND work_date BETWEEN ? AND ? "
+        "ORDER BY work_date",
+        (staff_id, start_date, end_date),
+    ).fetchall()
+    return [_row_to_schedule_assignment(row) for row in rows]
+
+
+def list_finalized_working_dates(
+    conn: sqlite3.Connection, start_date: str, end_date: str
+) -> dict[int, set[str]]:
+    """確定済みの勤務日を staff_id ごとに返す（連勤の期間境界判定に使う）.
+
+    DRAFTの日は含めない（まだ変更される可能性があるため）。
+    """
+    rows = conn.execute(
+        "SELECT a.staff_id, a.work_date FROM schedule_assignments a "
+        "JOIN schedule_days d ON d.work_date = a.work_date "
+        "WHERE a.work_date BETWEEN ? AND ? AND a.is_working = 1 AND d.status = ?",
+        (start_date, end_date, SCHEDULE_DAY_FINALIZED),
+    ).fetchall()
+    history: dict[int, set[str]] = {}
+    for row in rows:
+        history.setdefault(row["staff_id"], set()).add(row["work_date"])
+    return history
+
+
+_INSERT_RUN_SQL = """
+    INSERT INTO schedule_runs (
+        period_start, period_end, run_type, solver_status,
+        total_shortage, total_workdays, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+"""
+
+_UPSERT_DAY_SQL = """
+    INSERT INTO schedule_days (work_date, status, latest_run_id, updated_at)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT (work_date) DO UPDATE SET
+        latest_run_id = excluded.latest_run_id,
+        updated_at = excluded.updated_at
+"""
+
+_UPSERT_ASSIGNMENT_SQL = """
+    INSERT INTO schedule_assignments (
+        work_date, staff_id, is_working, start_time, end_time,
+        locked, source, source_run_id, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT (work_date, staff_id) DO UPDATE SET
+        is_working = excluded.is_working,
+        start_time = excluded.start_time,
+        end_time = excluded.end_time,
+        locked = excluded.locked,
+        source = excluded.source,
+        source_run_id = excluded.source_run_id,
+        updated_at = excluded.updated_at
+"""
+
+
+def _assignment_params(assignment: ScheduleAssignmentRecord, now: str) -> tuple:
+    return (
+        assignment.work_date,
+        assignment.staff_id,
+        int(assignment.is_working),
+        assignment.start_time,
+        assignment.end_time,
+        int(assignment.locked),
+        assignment.source,
+        assignment.source_run_id,
+        now,
+    )
+
+
+def _insert_run(
+    conn: sqlite3.Connection,
+    period_start: str,
+    period_end: str,
+    run_type: str,
+    solver_status: str,
+    total_shortage: int,
+    total_workdays: int,
+    now: str,
+) -> int:
+    """呼び出し側のトランザクション内で使う（runだけ残る状態を作らないため）."""
+    cur = conn.execute(
+        _INSERT_RUN_SQL,
+        (
+            period_start,
+            period_end,
+            run_type,
+            solver_status,
+            total_shortage,
+            total_workdays,
+            now,
+        ),
+    )
+    return cur.lastrowid
+
+
+def save_initial_schedule(
+    conn: sqlite3.Connection,
+    work_dates: list[str],
+    assignments: list[ScheduleAssignmentRecord],
+    run_type: str,
+    solver_status: str,
+    total_shortage: int,
+    total_workdays: int,
+) -> int:
+    """勤務案を下書きとして保存し、run_id を返す（1トランザクション）.
+
+    schedule_runs・schedule_days・schedule_assignments をまとめて書く。
+    途中で失敗した場合はrunも作られない。
+    既存勤務表との突き合わせは service 層で判断する（ここでは上書きする）。
+    """
+    if not work_dates:
+        raise ValueError("work_dates is empty")
+
+    now = _now()
+    with conn:
+        run_id = _insert_run(
+            conn,
+            work_dates[0],
+            work_dates[-1],
+            run_type,
+            solver_status,
+            total_shortage,
+            total_workdays,
+            now,
+        )
+        for work_date in work_dates:
+            conn.execute(_UPSERT_DAY_SQL, (work_date, SCHEDULE_DAY_DRAFT, run_id, now))
+        for assignment in assignments:
+            conn.execute(
+                _UPSERT_ASSIGNMENT_SQL,
+                _assignment_params(
+                    dataclasses.replace(assignment, source_run_id=run_id), now
+                ),
+            )
+    return run_id
+
+
+def save_staff_manual_changes(
+    conn: sqlite3.Connection,
+    staff_id: int,
+    assignments: list[ScheduleAssignmentRecord],
+) -> None:
+    """1スタッフ分の手修正を1トランザクションで保存する.
+
+    渡された分だけを更新する（変更していない日は触らない）。
+    途中で失敗した場合は一部の日だけ保存された状態にならない。
+    """
+    for assignment in assignments:
+        if assignment.staff_id != staff_id:
+            raise ValueError(
+                f"assignment staff_id {assignment.staff_id!r} does not match {staff_id!r}"
+            )
+
+    now = _now()
+    with conn:
+        for assignment in assignments:
+            conn.execute(_UPSERT_ASSIGNMENT_SQL, _assignment_params(assignment, now))
+            conn.execute(
+                "UPDATE schedule_days SET updated_at = ? WHERE work_date = ?",
+                (now, assignment.work_date),
+            )
+
+
+def apply_regenerated_schedule(
+    conn: sqlite3.Connection,
+    work_dates: list[str],
+    assignments: list[ScheduleAssignmentRecord],
+    solver_status: str,
+    total_shortage: int,
+    total_workdays: int,
+) -> int:
+    """再生成結果を反映し、新しい run_id を返す（1トランザクション）.
+
+    assignments には「更新してよいセル」だけを渡す。固定セル・確定日は
+    service 層で除外済みであること（ここでは渡されたものをそのまま書く）。
+    """
+    if not work_dates:
+        raise ValueError("work_dates is empty")
+
+    now = _now()
+    with conn:
+        run_id = _insert_run(
+            conn,
+            work_dates[0],
+            work_dates[-1],
+            "REGENERATE",
+            solver_status,
+            total_shortage,
+            total_workdays,
+            now,
+        )
+        for assignment in assignments:
+            conn.execute(
+                _UPSERT_ASSIGNMENT_SQL,
+                _assignment_params(
+                    dataclasses.replace(assignment, source_run_id=run_id), now
+                ),
+            )
+        for work_date in work_dates:
+            conn.execute(
+                "UPDATE schedule_days SET latest_run_id = ?, updated_at = ? "
+                "WHERE work_date = ? AND status = ?",
+                (run_id, now, work_date, SCHEDULE_DAY_DRAFT),
+            )
+    return run_id
+
+
+def finalize_schedule_day(conn: sqlite3.Connection, work_date: str) -> None:
+    """その日を確定する. assignments は変更しない."""
+    now = _now()
+    with conn:
+        cur = conn.execute(
+            "UPDATE schedule_days SET status = ?, finalized_at = ?, updated_at = ? "
+            "WHERE work_date = ?",
+            (SCHEDULE_DAY_FINALIZED, now, now, work_date),
+        )
+        if cur.rowcount == 0:
+            raise ValueError(f"schedule day not found: {work_date!r}")
+
+
+def unfinalize_schedule_day(conn: sqlite3.Connection, work_date: str) -> None:
+    """確定を解除して下書きへ戻す（明示操作のみ）."""
+    now = _now()
+    with conn:
+        cur = conn.execute(
+            "UPDATE schedule_days SET status = ?, finalized_at = NULL, updated_at = ? "
+            "WHERE work_date = ?",
+            (SCHEDULE_DAY_DRAFT, now, work_date),
+        )
+        if cur.rowcount == 0:
+            raise ValueError(f"schedule day not found: {work_date!r}")
+
