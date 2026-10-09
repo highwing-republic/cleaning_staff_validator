@@ -39,7 +39,10 @@ from src.models import (
     ScheduleAssignmentRecord,
     ScheduleChange,
     ScheduleDayView,
+    ScheduleExport,
+    ScheduleExportStaffRow,
     ScheduleGenerationResult,
+    SchedulePeriodValidationResult,
     CurrentScheduleView,
     SpecialSkill,
     StaffDatePreferenceInput,
@@ -48,6 +51,9 @@ from src.models import (
     StaffInput,
     ValidationError,
 )
+from src.schedule_excel import build_schedule_excel
+from src.schedule_output_display import format_export_cell
+from src.schedule_validation_adapter import validate_schedule_period
 from src.shift_generation import generate_shift
 from src.staffing_validation import validate_month_staffing
 from src.validation import (
@@ -1049,3 +1055,102 @@ def unfinalize_schedule_day(
     repo.unfinalize_schedule_day(conn, work_date)
     return []
 
+
+
+# ---------------------------------------------------------------------------
+# 現在勤務表の検証・出力（Phase 11）
+# ---------------------------------------------------------------------------
+
+
+def validate_current_schedule(
+    conn: sqlite3.Connection, work_dates: list[str]
+) -> SchedulePeriodValidationResult:
+    """保存済み勤務表を検証する（毎回DBから読み直すので手修正が即反映される）.
+
+    検証対象は schedule_assignments で、勤怠CSV（attendance_shifts）とは別概念。
+    ロール・スキルはスタッフマスターの現在値を使う。
+    """
+    if not work_dates:
+        return SchedulePeriodValidationResult(work_dates=[])
+
+    schedule = get_current_schedule(conn, work_dates)
+    first, last = work_dates[0], work_dates[-1]
+    staff = repo.list_staff(conn, include_inactive=True)
+    return validate_schedule_period(
+        work_dates,
+        schedule,
+        repo.list_daily_requirements(conn, first, last),
+        repo.list_role_requirements(conn, first, last),
+        staff,
+        get_role_names(conn),
+        active_staff_ids=frozenset(s.staff_id for s in staff if s.active),
+    )
+
+
+def _export_staff_order(
+    staff: list[StaffInput], scheduled_ids: set[int]
+) -> list[StaffInput]:
+    """勤務表に載せるスタッフを安定した順番で返す.
+
+    有効スタッフに加えて、勤務表に行がある無効スタッフも落とさない
+    （当時の勤務表から人が消えないようにするため）。
+    """
+    targets = [s for s in staff if s.active or s.staff_id in scheduled_ids]
+    return sorted(targets, key=lambda s: (s.role_id, s.employee_code, s.staff_id))
+
+
+def build_schedule_export(
+    conn: sqlite3.Connection,
+    work_dates: list[str],
+    exported_at: str | None = None,
+) -> ScheduleExport:
+    """勤務表Excelの材料を集める（押した時点の現在勤務表を使う）."""
+    validation = validate_current_schedule(conn, work_dates)
+    if not work_dates:
+        return ScheduleExport(
+            work_dates=[], validation=validation, exported_at=exported_at
+        )
+
+    schedule = get_current_schedule(conn, work_dates)
+    role_names = get_role_names(conn)
+    staff = repo.list_staff(conn, include_inactive=True)
+    scheduled_ids = {
+        staff_id
+        for day in schedule.days
+        for staff_id in day.assignments
+    }
+
+    rows: list[ScheduleExportStaffRow] = []
+    for member in _export_staff_order(staff, scheduled_ids):
+        cells = {}
+        for work_date in work_dates:
+            view = schedule.day(work_date)
+            exists = view is not None and view.exists
+            assignment = view.assignments.get(member.staff_id) if view else None
+            cells[work_date] = format_export_cell(assignment, exists)
+        rows.append(
+            ScheduleExportStaffRow(
+                staff=member,
+                role_name=role_names.get(member.role_id, str(member.role_id)),
+                cells=cells,
+            )
+        )
+
+    return ScheduleExport(
+        work_dates=list(work_dates),
+        validation=validation,
+        staff_rows=rows,
+        role_names=role_names,
+        exported_at=exported_at,
+    )
+
+
+def export_schedule_excel(
+    conn: sqlite3.Connection,
+    work_dates: list[str],
+    exported_at: str | None = None,
+) -> bytes:
+    """勤務表Excelを bytes で返す（DBには保存しない）."""
+    return build_schedule_excel(
+        build_schedule_export(conn, work_dates, exported_at=exported_at)
+    )

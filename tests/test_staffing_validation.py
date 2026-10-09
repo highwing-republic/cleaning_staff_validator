@@ -104,8 +104,9 @@ def test_worst_status_priority():
 
 
 def test_invalid_severity_rejected():
+    # INFO はPhase 11で有効な severity になったため、別の未定義値で検証する
     with pytest.raises(ValueError):
-        ValidationIssue("A", "INFO", "m", D)
+        ValidationIssue("A", "NOTICE", "m", D)
 
 
 # ---------------------------------------------------------------------------

@@ -34,6 +34,7 @@ PAGES = [
     "pages/05_preferences.py",
     "pages/06_generate.py",
     "pages/07_schedule.py",
+    "pages/08_output.py",
 ]
 
 
@@ -2366,3 +2367,226 @@ def _first_working_day(db_path, ids, dates):
             if work_date in dates and is_working:
                 return staff_id, work_date
     raise AssertionError("出勤のセルがありません")
+
+
+# ---------------------------------------------------------------------------
+# 08 勤務表出力
+# ---------------------------------------------------------------------------
+
+OUTPUT_PAGE = "pages/08_output.py"
+EXCEL_DOWNLOAD_BUTTON = "勤務表Excelをダウンロード"
+
+
+def _open_output_page():
+    at = AppTest.from_file(_page(OUTPUT_PAGE), default_timeout=120)
+    at.run()
+    assert not at.exception
+    return at
+
+
+def _output_dates(at):
+    from src.period_utils import period_dates
+
+    start = at.session_state["output_period_start"]
+    days = at.session_state["output_period_days"]
+    return period_dates(start.isoformat(), int(days))
+
+
+def _daily_check_table(at):
+    return _table_with_column(at, "配置")
+
+
+def _issue_table(at):
+    return _table_with_column(at, "種類")
+
+
+def _all_page_text(at):
+    parts = [e.value for e in at.info] + [e.value for e in at.warning]
+    parts += [e.value for e in at.success] + [e.value for e in at.error]
+    parts += [e.value for e in at.caption]
+    return " ".join(str(p) for p in parts)
+
+
+def test_output_page_runs_without_a_schedule(db_path):
+    """§83: ⑧勤務表出力ページが開く."""
+    _seed_generation_staff(db_path)
+    at = _open_output_page()
+    assert any("まだ作成されていません" in i.value for i in at.info)
+    assert any(b.label == EXCEL_DOWNLOAD_BUTTON for b in at.download_button)
+
+
+def test_output_page_offers_period_selection(db_path):
+    """§83: 期間選択できる."""
+    from src.period_utils import PERIOD_MAX_DAYS
+
+    _, dates = _seed_saved_schedule(db_path)
+    at = _open_output_page()
+    assert at.date_input(key="output_period_start")
+    # options は format_func 適用後（"10日間" など）なので数値部分だけを見る
+    options = at.selectbox(key="output_period_days").options
+    day_counts = [int(str(o).replace("日間", "")) for o in options]
+    assert max(day_counts) == PERIOD_MAX_DAYS
+
+    at.selectbox(key="output_period_days").select(10)
+    at.run()
+    assert not at.exception
+    assert len(_output_dates(at)) == 10
+    assert len(_daily_check_table(at)) == 10
+    assert dates
+
+
+def test_output_page_shows_the_summary(db_path):
+    """§83: サマリー表示."""
+    _, dates = _seed_saved_schedule(db_path)
+    at = _open_output_page()
+    metrics = {m.label: m.value for m in at.metric}
+    assert metrics["作成済み日数"] == f"{len(dates)} / {len(dates)}"
+    assert metrics["未作成日数"] == "0"
+    assert metrics["確定日数"] == "0"
+    assert metrics["下書き日数"] == str(len(dates))
+    assert metrics["問題なし日数"] == str(len(dates))
+
+
+def test_output_page_shows_the_daily_check_table(db_path):
+    """§83: 日別検証表示."""
+    _, dates = _seed_saved_schedule(db_path)
+    at = _open_output_page()
+    table = _daily_check_table(at)
+    assert len(table) == len(dates)
+    for label in ("日付", "状態", "予約", "必要", "配置", "人数", "判定"):
+        assert label in table.columns
+    assert set(table["状態"]) == {"下書き"}
+
+
+def test_output_page_shows_a_shortage_after_a_manual_change(db_path):
+    """§83・§19: 手修正で生じた不足が表示される."""
+    ids, dates = _seed_saved_schedule(db_path, required_total_staff=3)
+    conn = get_connection(str(db_path))
+    staff_id = list(ids.values())[0]
+    assert services.save_manual_schedule_changes(conn, staff_id, {dates[0]: (False, True)}) == []
+    conn.close()
+
+    at = _open_output_page()
+    table = _daily_check_table(at)
+    assert table.iloc[0]["人数"] == "1名不足"
+    assert "ERROR" in table.iloc[0]["判定"]
+    assert "STAFF_SHORTAGE" in list(_issue_table(at)["種類"])
+    assert any("問題がある日" in w.value for w in at.warning)
+
+
+def test_output_page_shows_requirement_missing_days(db_path):
+    """§83: 要件未設定表示."""
+    ids, dates = _seed_saved_schedule(db_path)
+    conn = get_connection(str(db_path))
+    repo.save_period_requirements(conn, [dates[0]], [], [])
+    conn.close()
+    assert ids
+
+    at = _open_output_page()
+    assert {m.label: m.value for m in at.metric}["要件未設定日数"] == "1"
+    assert _daily_check_table(at).iloc[0]["必要"] == "-"
+    assert "REQUIREMENT_MISSING" in list(_issue_table(at)["種類"])
+
+
+def test_output_page_shows_missing_schedule_days(db_path):
+    """§83: 勤務表未作成表示."""
+    import datetime
+
+    _seed_saved_schedule(db_path)
+    at = _open_output_page()
+    dates = _output_dates(at)
+    at.date_input(key="output_period_start").set_value(
+        datetime.date.fromisoformat(dates[-1])
+    )
+    at.run()
+    assert not at.exception
+
+    assert int({m.label: m.value for m in at.metric}["未作成日数"]) > 0
+    assert "未作成" in list(_daily_check_table(at)["状態"])
+    assert "SCHEDULE_MISSING" in list(_issue_table(at)["種類"])
+    assert any("未作成の日" in w.value for w in at.warning)
+
+
+def test_output_page_shows_draft_days(db_path):
+    """§83: 下書き表示."""
+    _seed_saved_schedule(db_path)
+    at = _open_output_page()
+    assert "下書き" in list(_daily_check_table(at)["状態"])
+    assert "下書きの日付を含みます" in _all_page_text(at)
+
+
+def test_output_page_shows_finalized_days(db_path):
+    """§83: 確定表示."""
+    _, dates = _seed_saved_schedule(db_path)
+    conn = get_connection(str(db_path))
+    assert services.finalize_schedule_day(conn, dates[0]) == []
+    conn.close()
+
+    at = _open_output_page()
+    table = _daily_check_table(at)
+    assert table.iloc[0]["状態"] == "確定"
+    assert {m.label: m.value for m in at.metric}["確定日数"] == "1"
+
+
+def test_output_page_has_the_excel_download_button(db_path):
+    """§83・§84: Excel DownloadButtonがある."""
+    _seed_saved_schedule(db_path)
+    at = _open_output_page()
+    buttons = [b for b in at.download_button if b.label == EXCEL_DOWNLOAD_BUTTON]
+    assert len(buttons) == 1
+
+
+def test_output_page_offers_the_download_even_with_problems(db_path):
+    """§31: 不足があってもダウンロードを禁止しない."""
+    ids, dates = _seed_saved_schedule(db_path, required_total_staff=3)
+    conn = get_connection(str(db_path))
+    services.save_manual_schedule_changes(conn, list(ids.values())[0], {dates[0]: (False, True)})
+    conn.close()
+
+    at = _open_output_page()
+    assert any(b.label == EXCEL_DOWNLOAD_BUTTON for b in at.download_button)
+    assert not at.exception
+
+
+def test_output_page_issue_filter_hides_draft_notices(db_path):
+    _seed_saved_schedule(db_path)
+    at = _open_output_page()
+    assert any("問題は見つかりませんでした" in s.value for s in at.success)
+
+    at.radio(key="output_issue_filter").set_value("全日")
+    at.run()
+    assert "SCHEDULE_DRAFT" in list(_issue_table(at)["種類"])
+
+
+def test_output_page_reflects_a_regeneration(db_path):
+    """§64: 再生成の反映後は最新の勤務表を検証する."""
+    _, dates = _seed_saved_schedule(db_path, required_total_staff=1)
+    at = _open_output_page()
+    assert int({m.label: m.value for m in at.metric}["不足人数の合計"]) == 0
+
+    _seed_generation_requirements(
+        db_path, dates,
+        [DailyRequirementInput(work_date=d, required_total_staff=3) for d in dates],
+    )
+    at = _open_output_page()
+    assert int({m.label: m.value for m in at.metric}["不足人数の合計"]) > 0
+
+    conn = get_connection(str(db_path))
+    preview = services.preview_regenerated_schedule(conn, dates)
+    services.apply_regenerated_schedule(conn, dates, preview)
+    conn.close()
+
+    at = _open_output_page()
+    assert int({m.label: m.value for m in at.metric}["不足人数の合計"]) == 0
+
+
+def test_output_page_does_not_edit_the_schedule(db_path):
+    """§26: ⑧は確認・検証・出力専用（勤務を変える操作は置かない）."""
+    ids, dates = _seed_saved_schedule(db_path)
+    before = {sid: _assignment_rows(db_path, sid) for sid in ids.values()}
+    at = _open_output_page()
+
+    labels = [b.label for b in at.button]
+    assert all("確定" not in label and "保存" not in label for label in labels)
+    assert {sid: _assignment_rows(db_path, sid) for sid in ids.values()} == before
+    assert "⑦ 勤務表調整" in _all_page_text(at)

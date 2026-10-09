@@ -21,6 +21,7 @@ from src.attendance_import import is_cleaning_department
 from src.constants import (
     SHIFT_TYPE_UNKNOWN,
     VALIDATION_STATUS_ERROR,
+    VALIDATION_STATUS_INFO,
     VALIDATION_STATUS_OK,
     VALIDATION_STATUS_WARNING,
 )
@@ -54,13 +55,14 @@ REQUIREMENT_MISSING = "REQUIREMENT_MISSING"
 
 _SEVERITY_RANK = {
     VALIDATION_STATUS_OK: 0,
-    VALIDATION_STATUS_WARNING: 1,
-    VALIDATION_STATUS_ERROR: 2,
+    VALIDATION_STATUS_INFO: 1,
+    VALIDATION_STATUS_WARNING: 2,
+    VALIDATION_STATUS_ERROR: 3,
 }
 
 
 def worst_status(issues: list[ValidationIssue]) -> str:
-    """最も重大な severity（ERROR > WARNING > OK）. Issueなしは OK."""
+    """最も重大な severity（ERROR > WARNING > INFO > OK）. Issueなしは OK."""
     status = VALIDATION_STATUS_OK
     for issue in issues:
         if _SEVERITY_RANK[issue.severity] > _SEVERITY_RANK[status]:

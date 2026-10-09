@@ -18,6 +18,7 @@ from src.constants import (
     SOLVER_STATUSES,
     TIME_STATUSES,
     VALIDATION_STATUSES,
+    VALIDATION_STATUSES_CLEAR,
 )
 
 
@@ -813,3 +814,160 @@ class RegenerationPreview:
     def change_count(self) -> int:
         return len(self.changes)
 
+
+
+# ---------------------------------------------------------------------------
+# 現在勤務表の検証・出力（Phase 11）
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ScheduleDayValidationResult:
+    """保存済み勤務表1日分の検証結果.
+
+    schedule_status が None の日は勤務表そのものが未作成で、人数・ロール・スキルは
+    判定しない（staffing=None）。必要条件は表示のために保持する。
+    staffing は既存の検証エンジン（staffing_validation）の判定結果をそのまま持つ。
+    """
+
+    work_date: str
+    schedule_status: str | None = None
+    staffing: DailyStaffingResult | None = None
+    requirement: DailyRequirementInput | None = None
+    scheduled_staff: int = 0
+    missing_assignment_count: int = 0
+    schedule_issues: list[ValidationIssue] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if self.schedule_status is not None and self.schedule_status not in SCHEDULE_DAY_STATUSES:
+            raise ValueError(f"invalid schedule_status: {self.schedule_status!r}")
+
+    @property
+    def exists(self) -> bool:
+        return self.schedule_status is not None
+
+    @property
+    def is_finalized(self) -> bool:
+        return self.schedule_status == SCHEDULE_DAY_FINALIZED
+
+    @property
+    def is_draft(self) -> bool:
+        return self.schedule_status == SCHEDULE_DAY_DRAFT
+
+    @property
+    def requirement_defined(self) -> bool:
+        return self.requirement is not None
+
+    @property
+    def required_staff(self) -> int | None:
+        return self.requirement.required_total_staff if self.requirement else None
+
+    @property
+    def reserved_rooms(self) -> int | None:
+        return self.requirement.reserved_rooms if self.requirement else None
+
+    @property
+    def staff_shortage(self) -> int:
+        """必要人数に対する不足（判定しない日は0）."""
+        if self.staffing is None or self.staffing.required_staff is None:
+            return 0
+        return max(0, self.staffing.required_staff - self.staffing.actual_cleaning_staff)
+
+    @property
+    def issues(self) -> list[ValidationIssue]:
+        """勤務表そのものの問題 → 体制の問題 の順に並べた全Issue."""
+        staffing_issues = self.staffing.issues if self.staffing else []
+        return [*self.schedule_issues, *staffing_issues]
+
+    @property
+    def status(self) -> str:
+        """この日の総合判定（最も重大な severity）."""
+        from src.staffing_validation import worst_status
+
+        return worst_status(self.issues)
+
+    @property
+    def has_problem(self) -> bool:
+        return self.status not in VALIDATION_STATUSES_CLEAR
+
+
+@dataclass(frozen=True)
+class SchedulePeriodValidationResult:
+    """対象期間分の勤務表検証結果."""
+
+    work_dates: list[str]
+    days: list[ScheduleDayValidationResult] = field(default_factory=list)
+
+    def day(self, work_date: str) -> ScheduleDayValidationResult | None:
+        for day in self.days:
+            if day.work_date == work_date:
+                return day
+        return None
+
+    def count_status(self, status: str) -> int:
+        return sum(1 for d in self.days if d.status == status)
+
+    @property
+    def existing_days(self) -> int:
+        return sum(1 for d in self.days if d.exists)
+
+    @property
+    def missing_days(self) -> int:
+        return sum(1 for d in self.days if not d.exists)
+
+    @property
+    def finalized_days(self) -> int:
+        return sum(1 for d in self.days if d.is_finalized)
+
+    @property
+    def draft_days(self) -> int:
+        return sum(1 for d in self.days if d.is_draft)
+
+    @property
+    def clear_days(self) -> int:
+        """不足等の問題がない日数（下書きだけの日も含む）."""
+        return sum(1 for d in self.days if not d.has_problem)
+
+    @property
+    def problem_days(self) -> int:
+        return sum(1 for d in self.days if d.has_problem)
+
+    @property
+    def requirement_missing_days(self) -> int:
+        return sum(1 for d in self.days if d.exists and not d.requirement_defined)
+
+    @property
+    def has_draft(self) -> bool:
+        return any(d.is_draft for d in self.days)
+
+    @property
+    def issues(self) -> list[ValidationIssue]:
+        return [issue for day in self.days for issue in day.issues]
+
+    @property
+    def total_shortage(self) -> int:
+        return sum(d.staff_shortage for d in self.days)
+
+
+@dataclass(frozen=True)
+class ScheduleExportStaffRow:
+    """勤務表Excelの1行（スタッフ1名）. cells は work_date -> 表示文字列."""
+
+    staff: StaffInput
+    role_name: str
+    cells: dict[str, str] = field(default_factory=dict)
+
+    @property
+    def working_days(self) -> int:
+        return sum(1 for value in self.cells.values() if ":" in value)
+
+
+@dataclass(frozen=True)
+class ScheduleExport:
+    """勤務表Excelを組み立てるために必要な情報（DB非依存の受け渡し用）."""
+
+    work_dates: list[str]
+    validation: SchedulePeriodValidationResult
+    staff_rows: list[ScheduleExportStaffRow] = field(default_factory=list)
+    role_names: dict[int, str] = field(default_factory=dict)
+    exported_at: str | None = None
