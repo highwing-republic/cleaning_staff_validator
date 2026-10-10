@@ -763,8 +763,8 @@ def test_m17_finalized_prior_days_limit_consecutive_work(conn):
     assert target[0] not in worked
 
 
-def test_m18_draft_prior_days_are_not_used_as_history(conn):
-    """M18: 期間前の2日がDRAFTなら prior_work_history に使わない."""
+def test_m18_draft_prior_days_are_used_as_history(conn):
+    """M18: 期間前の2日がDRAFTでも prior_work_history に使う."""
     prior = period_dates("2026-10-18", 2)
     target = period_dates("2026-10-20", 3)
     staff_id = add_staff(conn, "0001", "Aさん", max_consecutive_days=2)
@@ -773,7 +773,26 @@ def test_m18_draft_prior_days_are_not_used_as_history(conn):
     save_schedule(conn, prior)
     assert working_dates(conn, staff_id, prior) == set(prior)
 
-    assert services.build_prior_work_history(conn, target) == {}
+    assert services.build_prior_work_history(conn, target) == {staff_id: set(prior)}
+
+
+@pytest.mark.parametrize("finalize_prior", [True, False], ids=["finalized", "draft"])
+def test_generate_schedule_automatically_uses_prior_history(conn, finalize_prior):
+    prior = period_dates("2026-10-18", 2)
+    target = period_dates("2026-10-20", 3)
+    staff_id = add_staff(conn, "0001", "Aさん", max_consecutive_days=2)
+    set_requirements(conn, prior, required_total_staff=1)
+    set_requirements(conn, target, required_total_staff=1)
+    save_schedule(conn, prior)
+    if finalize_prior:
+        for work_date in prior:
+            services.finalize_schedule_day(conn, work_date)
+
+    result = services.generate_schedule(conn, target)
+
+    assert target[0] not in {
+        assignment.work_date for assignment in result.working_assignments(staff_id)
+    }
 
 
 def test_prior_history_is_used_by_the_regeneration_request(conn):
@@ -789,6 +808,20 @@ def test_prior_history_is_used_by_the_regeneration_request(conn):
 
     request = services.build_regeneration_request(conn, target)
     assert request.prior_work_history == {staff_id: set(prior)}
+
+
+def test_following_history_is_used_by_the_regeneration_request(conn):
+    target = period_dates("2026-10-20", 1)
+    following = period_dates("2026-10-21", 2)
+    staff_id = add_staff(conn, "0001", "Aさん", max_consecutive_days=2)
+    set_requirements(conn, target, required_total_staff=1)
+    set_requirements(conn, following, required_total_staff=1)
+    save_schedule(conn, following)
+    save_schedule(conn, target)
+
+    request = services.build_regeneration_request(conn, target)
+
+    assert request.following_work_history == {staff_id: set(following)}
 
 
 def test_prior_history_with_an_empty_period(conn):

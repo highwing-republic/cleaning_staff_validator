@@ -558,8 +558,7 @@ def _add_max_consecutive_constraints(
 ) -> None:
     """任意の (max+1) 連続日について出勤数が max 以下になるよう制約する.
 
-    期間開始前の勤務実績（prior_work_history）も同じ窓に含めるため、
-    「期間開始前に3連勤 + 今回3連勤」のような超過も検出できる。
+    期間前後の勤務実績も同じ窓に含めるため、期間境界をまたぐ超過も検出できる。
     """
     for staff in request.staff:
         limit = staff.max_consecutive_days
@@ -568,8 +567,13 @@ def _add_max_consecutive_constraints(
 
         window = limit + 1
         prior = request.prior_work_history.get(staff.staff_id, set())
-        # 期間開始前の日付を、期間の日付列の前に連結して同じ窓で数える
-        timeline = _prior_dates(work_dates[0], window - 1) + work_dates
+        following = request.following_work_history.get(staff.staff_id, set())
+        # 期間前後の日付を連結して同じ窓で数える
+        timeline = (
+            _prior_dates(work_dates[0], window - 1)
+            + work_dates
+            + _following_dates(work_dates[-1], window - 1)
+        )
 
         for start in range(len(timeline) - window + 1):
             terms = []
@@ -578,7 +582,7 @@ def _add_max_consecutive_constraints(
                 key = (staff.staff_id, work_date)
                 if key in x:
                     terms.append(x[key])
-                elif work_date in prior:
+                elif work_date in prior or work_date in following:
                     constant += 1
             if not terms:
                 continue
@@ -595,6 +599,18 @@ def _prior_dates(first_work_date: str, count: int) -> list[str]:
     if first is None:
         raise ValueError(f"work_date must be YYYY-MM-DD: {first_work_date!r}")
     return [(first - timedelta(days=offset)).isoformat() for offset in range(count, 0, -1)]
+
+
+def _following_dates(last_work_date: str, count: int) -> list[str]:
+    """期間最終日の直後 count 日分の日付を昇順で返す."""
+    from datetime import timedelta
+
+    if count <= 0:
+        return []
+    last = parse_date(last_work_date)
+    if last is None:
+        raise ValueError(f"work_date must be YYYY-MM-DD: {last_work_date!r}")
+    return [(last + timedelta(days=offset)).isoformat() for offset in range(1, count + 1)]
 
 
 # ---------------------------------------------------------------------------

@@ -532,6 +532,27 @@ def test_prior_work_history_is_ignored_for_other_staff():
     assert TUESDAY in worked_dates(result, 2)
 
 
+def test_following_work_history_counts_toward_consecutive_limit():
+    """期間後2連勤済み・max連勤2 → 期間最終日は勤務不可."""
+    staff = [make_staff(1, max_consecutive_days=2)]
+    following = {1: {"2026-10-25", "2026-10-26"}}
+    result = run(staff, required(1), following_work_history=following)
+    assert SATURDAY not in worked_dates(result, 1)
+
+
+def test_following_work_history_with_a_gap_does_not_restrict():
+    """期間直後に休みが挟まっていれば連勤は途切れる."""
+    staff = [make_staff(1, max_consecutive_days=2)]
+    following = {1: {"2026-10-26", "2026-10-27"}}  # 10/25 は休み
+    result = run(
+        staff,
+        required(1, dates=[SATURDAY]),
+        work_dates=[SATURDAY],
+        following_work_history=following,
+    )
+    assert SATURDAY in worked_dates(result, 1)
+
+
 # ---------------------------------------------------------------------------
 # S21〜S22: 二段階最適化と重複不足
 # ---------------------------------------------------------------------------
