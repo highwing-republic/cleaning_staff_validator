@@ -930,18 +930,20 @@ def list_staff_schedule_assignments(
     return [_row_to_schedule_assignment(row) for row in rows]
 
 
-def list_finalized_working_dates(
+def list_scheduled_working_dates(
     conn: sqlite3.Connection, start_date: str, end_date: str
 ) -> dict[int, set[str]]:
-    """確定済みの勤務日を staff_id ごとに返す（連勤の期間境界判定に使う）.
+    """保存済みの勤務日を staff_id ごとに返す（連勤の期間境界判定に使う）.
 
-    DRAFTの日は含めない（まだ変更される可能性があるため）。
+    DRAFTでも現時点の最良の見積りであり、除外すると「前期間は全員休み」という
+    より誤った前提になるため、DRAFT・FINALIZEDの両方を含める。
     """
     rows = conn.execute(
         "SELECT a.staff_id, a.work_date FROM schedule_assignments a "
         "JOIN schedule_days d ON d.work_date = a.work_date "
-        "WHERE a.work_date BETWEEN ? AND ? AND a.is_working = 1 AND d.status = ?",
-        (start_date, end_date, SCHEDULE_DAY_FINALIZED),
+        "WHERE a.work_date BETWEEN ? AND ? AND a.is_working = 1 "
+        "AND d.status IN (?, ?)",
+        (start_date, end_date, SCHEDULE_DAY_DRAFT, SCHEDULE_DAY_FINALIZED),
     ).fetchall()
     history: dict[int, set[str]] = {}
     for row in rows:

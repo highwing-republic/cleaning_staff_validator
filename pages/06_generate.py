@@ -83,6 +83,7 @@ st.caption(
     f"{REQUIREMENT_MISSING_LABEL}の日は人数・ロール・スキルの条件を設定しないため、"
     "0名配置になることがあります。"
 )
+st.caption("期間の前後にある勤務表を連勤の判定に使っています。")
 
 if not staff_details:
     st.info(

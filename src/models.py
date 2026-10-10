@@ -449,8 +449,8 @@ class GenerationDay:
 class GenerationRequest:
     """シフト生成の入力一式（DB・Streamlitに依存しない）.
 
-    prior_work_history は staff_id -> 期間開始直前の勤務日（'YYYY-MM-DD'）の集合。
-    期間境界をまたぐ連勤を正しく数えるために使う。
+    prior_work_history / following_work_history は staff_id -> 期間の直前 / 直後の
+    勤務日（'YYYY-MM-DD'）の集合。期間境界をまたぐ連勤を正しく数えるために使う。
     fixed_assignments は固定された勤務（手修正して固定した分と確定日の全スタッフ）。
     """
 
@@ -458,6 +458,7 @@ class GenerationRequest:
     staff: list[GenerationStaff]
     days: list[GenerationDay]
     prior_work_history: dict[int, set[str]] = field(default_factory=dict)
+    following_work_history: dict[int, set[str]] = field(default_factory=dict)
     # (staff_id, work_date) -> 1=出勤で固定 / 0=休みで固定. Hard Constraint として扱い、
     # 公平性や希望休のために動かさない
     fixed_assignments: dict[tuple[int, str], int] = field(default_factory=dict)

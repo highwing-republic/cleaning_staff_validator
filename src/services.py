@@ -470,6 +470,7 @@ def build_generation_request(
     conn: sqlite3.Connection,
     work_dates: list[str],
     prior_work_history: dict[int, set[str]] | None = None,
+    following_work_history: dict[int, set[str]] | None = None,
     time_limit_seconds: float | None = None,
 ) -> GenerationRequest:
     """DBから生成に必要なデータを集め、Solver用の入力へ変換する.
@@ -518,7 +519,10 @@ def build_generation_request(
         work_dates=list(work_dates),
         staff=staff,
         days=days,
-        prior_work_history=prior_work_history or {},
+        prior_work_history={} if prior_work_history is None else prior_work_history,
+        following_work_history=(
+            {} if following_work_history is None else following_work_history
+        ),
         time_limit_seconds=time_limit_seconds,
     )
 
@@ -545,11 +549,20 @@ def generate_schedule(
     conn: sqlite3.Connection,
     work_dates: list[str],
     prior_work_history: dict[int, set[str]] | None = None,
+    following_work_history: dict[int, set[str]] | None = None,
     time_limit_seconds: float | None = None,
 ) -> ScheduleGenerationResult:
     """対象期間の勤務案を生成する（DBへは保存しない）."""
+    if prior_work_history is None:
+        prior_work_history = build_prior_work_history(conn, work_dates)
+    if following_work_history is None:
+        following_work_history = build_following_work_history(conn, work_dates)
     request = build_generation_request(
-        conn, work_dates, prior_work_history, time_limit_seconds
+        conn,
+        work_dates,
+        prior_work_history=prior_work_history,
+        following_work_history=following_work_history,
+        time_limit_seconds=time_limit_seconds,
     )
     return generate_shift(request)
 
@@ -819,7 +832,7 @@ def build_regeneration_request(
     """現在の勤務表の固定・確定を反映した再生成の入力を作る.
 
     DRAFT日は locked のセルだけ固定、確定日はその日の全スタッフを固定する。
-    連勤の期間境界は確定済みの勤務表から求める（DRAFTは使わない）。
+    連勤の期間境界は保存済みの勤務表から求める（DRAFTも含む）。
     """
     current = schedule or get_current_schedule(conn, work_dates)
     fixed: dict[tuple[int, str], int] = {}
@@ -835,6 +848,7 @@ def build_regeneration_request(
         conn,
         work_dates,
         prior_work_history=build_prior_work_history(conn, work_dates),
+        following_work_history=build_following_work_history(conn, work_dates),
         time_limit_seconds=time_limit_seconds,
     )
     return dataclasses.replace(request, fixed_assignments=fixed)
@@ -843,10 +857,9 @@ def build_regeneration_request(
 def build_prior_work_history(
     conn: sqlite3.Connection, work_dates: list[str]
 ) -> dict[int, set[str]]:
-    """対象期間の直前について、確定済みの勤務日を staff_id ごとに返す.
+    """対象期間の直前について、保存済みの勤務日を staff_id ごとに返す.
 
     遡る日数はスタッフの最大連勤日数の最大値で足りる。
-    DRAFTの日は含めない（まだ変更される可能性があるため）。
     """
     if not work_dates:
         return {}
@@ -863,7 +876,32 @@ def build_prior_work_history(
         return {}
     first = (start - timedelta(days=lookback)).isoformat()
     last = (start - timedelta(days=1)).isoformat()
-    return repo.list_finalized_working_dates(conn, first, last)
+    return repo.list_scheduled_working_dates(conn, first, last)
+
+
+def build_following_work_history(
+    conn: sqlite3.Connection, work_dates: list[str]
+) -> dict[int, set[str]]:
+    """対象期間の直後について、保存済みの勤務日を staff_id ごとに返す.
+
+    先を見る日数はスタッフの最大連勤日数の最大値で足りる。
+    """
+    if not work_dates:
+        return {}
+
+    limits = [
+        detail.staff.max_consecutive_days
+        for detail in repo.list_staff_details(conn, include_inactive=False)
+        if detail.staff.max_consecutive_days
+    ]
+    lookahead = max(limits) if limits else DEFAULT_PRIOR_LOOKBACK_DAYS
+
+    end = parse_date(work_dates[-1])
+    if end is None:
+        return {}
+    first = (end + timedelta(days=1)).isoformat()
+    last = (end + timedelta(days=lookahead)).isoformat()
+    return repo.list_scheduled_working_dates(conn, first, last)
 
 
 def _detect_fixed_conflicts(
