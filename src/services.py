@@ -837,13 +837,6 @@ def build_regeneration_request(
     current = schedule or get_current_schedule(conn, work_dates)
     fixed: dict[tuple[int, str], int] = {}
 
-    for view in current.days:
-        if not view.exists:
-            continue
-        for staff_id, assignment in view.assignments.items():
-            if view.is_finalized or assignment.locked:
-                fixed[(staff_id, view.work_date)] = int(assignment.is_working)
-
     request = build_generation_request(
         conn,
         work_dates,
@@ -851,6 +844,17 @@ def build_regeneration_request(
         following_work_history=build_following_work_history(conn, work_dates),
         time_limit_seconds=time_limit_seconds,
     )
+    request_staff_ids = {staff.staff_id for staff in request.staff}
+
+    for view in current.days:
+        if not view.exists:
+            continue
+        for staff_id, assignment in view.assignments.items():
+            if view.is_finalized or assignment.locked:
+                fixed[(staff_id, view.work_date)] = int(assignment.is_working)
+        if view.is_finalized:
+            for staff_id in request_staff_ids - view.assignments.keys():
+                fixed[(staff_id, view.work_date)] = 0
     return dataclasses.replace(request, fixed_assignments=fixed)
 
 
@@ -982,17 +986,20 @@ def preview_regenerated_schedule(
             if view is None or not view.is_editable:
                 continue
             existing = view.assignments.get(assignment.staff_id)
-            if existing is None or existing.locked:
+            if existing is not None and existing.locked:
                 continue
-            if existing.is_working == assignment.is_working:
+            if existing is not None and existing.is_working == assignment.is_working:
                 continue
             changes.append(
                 ScheduleChange(
                     work_date=assignment.work_date,
                     staff_id=assignment.staff_id,
                     staff_name=staff_names.get(assignment.staff_id, str(assignment.staff_id)),
-                    before_is_working=existing.is_working,
+                    before_is_working=(
+                        existing.is_working if existing is not None else False
+                    ),
                     after_is_working=assignment.is_working,
+                    before_exists=existing is not None,
                     after_start_time=assignment.start_time,
                     after_end_time=assignment.end_time,
                 )
@@ -1034,7 +1041,7 @@ def apply_regenerated_schedule(
         if view is None or not view.is_editable:
             continue
         existing = view.assignments.get(assignment.staff_id)
-        if existing is None or existing.locked:
+        if existing is not None and existing.locked:
             continue
         records.append(
             ScheduleAssignmentRecord(
