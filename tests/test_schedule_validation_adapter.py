@@ -363,6 +363,11 @@ def test_incomplete_schedule_is_detected(conn):
     day = day_of(conn, DATES[:1])
     issue = issue_of(day, SCHEDULE_INCOMPLETE)
     assert issue.severity == VALIDATION_STATUS_WARNING
+    assert issue.message == (
+        "勤務表に行がない有効スタッフが1名います"
+        "（下書きの日は「固定を守って再生成」で揃います。"
+        "確定日は確定を解除してから再生成してください）。"
+    )
     assert day.missing_assignment_count == 1
     assert late
 

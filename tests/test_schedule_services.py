@@ -18,8 +18,10 @@ from src.constants import (
     SOLVER_STATUS_INFEASIBLE,
 )
 from src.database import get_connection, initialize_database
+from src.generation_display import format_schedule_change
 from src.models import (
     DailyRequirementInput,
+    ScheduleChange,
     ScheduleGenerationResult,
     StaffDatePreferenceInput,
 )
@@ -520,11 +522,14 @@ def test_regeneration_request_fixes_every_cell_of_a_finalized_day(conn):
     set_requirements(conn, SHORT, required_total_staff=1)
     save_schedule(conn, SHORT)
     services.finalize_schedule_day(conn, SHORT[0])
+    late = add_staff(conn, "0003", "S3")
 
     request = services.build_regeneration_request(conn, SHORT)
     fixed_dates = {date for (_sid, date) in request.fixed_assignments}
     assert fixed_dates == {SHORT[0]}
-    assert len(request.fixed_assignments) == len(ids)
+    assert len(request.fixed_assignments) == len(request.staff)
+    assert request.fixed_assignments[(late, SHORT[0])] == 0
+    assert set(ids) < {staff.staff_id for staff in request.staff}
 
 
 def test_m19_locked_working_conflicting_with_absolute_off_is_reported(conn):
@@ -588,6 +593,96 @@ def test_m14_apply_updates_the_database_and_adds_one_run(conn):
     assert repo.get_schedule_run(conn, run_id).run_type == SCHEDULE_RUN_REGENERATE
     for day in repo.list_schedule_days(conn, SHORT[0], SHORT[-1]):
         assert day.latest_run_id == run_id
+
+
+def test_regeneration_adds_missing_staff_rows_to_draft_days(conn):
+    add_staff(conn, "0001", "Aさん")
+    set_requirements(conn, SHORT, required_total_staff=1)
+    save_schedule(conn, SHORT)
+    late = add_staff(conn, "0002", "後から登録さん")
+
+    preview = services.preview_regenerated_schedule(conn, SHORT)
+    new_changes = [change for change in preview.changes if change.staff_id == late]
+
+    assert [change.work_date for change in new_changes] == list(SHORT)
+    assert all(not change.before_exists for change in new_changes)
+    run_id, errors = services.apply_regenerated_schedule(conn, SHORT, preview)
+    assert run_id is not None
+    assert errors == []
+    for work_date in SHORT:
+        row = assignment(conn, work_date, late)
+        assert row is not None
+        assert row.locked is False
+        assert row.source == SCHEDULE_SOURCE_GENERATED
+
+
+def test_finalized_day_keeps_missing_staff_out_and_preserves_shortage(conn):
+    existing = add_staff(conn, "0001", "Aさん")
+    set_requirements(conn, SHORT, required_total_staff=1)
+    save_schedule(conn, SHORT)
+    services.finalize_schedule_day(conn, SHORT[0])
+    late = add_staff(conn, "0002", "後から登録さん")
+    set_requirements(conn, SHORT, required_total_staff=2)
+
+    preview = services.preview_regenerated_schedule(conn, SHORT)
+    finalized_result = next(
+        day for day in preview.result.days if day.work_date == SHORT[0]
+    )
+    assert finalized_result.staff_shortage == 1
+
+    services.apply_regenerated_schedule(conn, SHORT, preview)
+    validation = services.validate_current_schedule(conn, SHORT)
+    assert validation.day(SHORT[0]).staff_shortage == 1
+    assert assignment(conn, SHORT[0], existing).is_working is True
+    assert assignment(conn, SHORT[0], late) is None
+
+
+def test_preview_and_applied_validation_have_the_same_total_shortage(conn):
+    add_staff(conn, "0001", "Aさん")
+    set_requirements(conn, SHORT, required_total_staff=1)
+    save_schedule(conn, SHORT)
+    services.finalize_schedule_day(conn, SHORT[0])
+    add_staff(conn, "0002", "後から登録さん")
+    set_requirements(conn, SHORT, required_total_staff=2)
+
+    preview = services.preview_regenerated_schedule(conn, SHORT)
+    services.apply_regenerated_schedule(conn, SHORT, preview)
+    validation = services.validate_current_schedule(conn, SHORT)
+
+    assert preview.result.total_shortage == validation.total_shortage
+
+
+@pytest.mark.parametrize(
+    ("change", "expected"),
+    [
+        (
+            ScheduleChange(
+                work_date=SHORT[0],
+                staff_id=1,
+                staff_name="Aさん",
+                before_is_working=False,
+                after_is_working=True,
+                before_exists=False,
+                after_start_time="09:00",
+                after_end_time="15:30",
+            ),
+            "（新規） → 09:00-15:30",
+        ),
+        (
+            ScheduleChange(
+                work_date=SHORT[0],
+                staff_id=1,
+                staff_name="Aさん",
+                before_is_working=False,
+                after_is_working=False,
+                before_exists=False,
+            ),
+            "（新規） → 休",
+        ),
+    ],
+)
+def test_format_schedule_change_for_a_new_row(change, expected):
+    assert format_schedule_change(change) == expected
 
 
 def test_preview_without_a_saved_schedule_reports_it(conn):

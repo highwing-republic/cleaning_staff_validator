@@ -111,7 +111,8 @@ def _schedule_issues(
                 SCHEDULE_INCOMPLETE,
                 VALIDATION_STATUS_WARNING,
                 f"勤務表に行がない有効スタッフが{missing_assignment_count}名います"
-                "（この日を再生成すると揃います）。",
+                "（下書きの日は「固定を守って再生成」で揃います。"
+                "確定日は確定を解除してから再生成してください）。",
                 work_date,
                 actual=missing_assignment_count,
             )

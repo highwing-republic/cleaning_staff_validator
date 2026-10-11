@@ -786,6 +786,7 @@ class ScheduleChange:
     staff_name: str
     before_is_working: bool
     after_is_working: bool
+    before_exists: bool = True
     after_start_time: str | None = None
     after_end_time: str | None = None
 
