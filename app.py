@@ -51,7 +51,9 @@ def main() -> None:
     # Streamlit Cloud ではサーバーのファイルが再起動で消えるため、
     # どの画面よりも先に、非公開リポジトリの控えからデータを戻す（設定が無ければ何もしない）
     db_backup.ensure_restored()
-    _show_backup_status()
+    restore_failed = db_backup.status()["restore_failed"]
+    if not restore_failed:
+        _show_backup_status()
     home_page = st.Page(home, title=PAGE_HOME, default=True)
     # スタッフ管理などから「ホーム・かんたん作成へ戻る」で戻れるようにする
     st.session_state[HOME_PAGE_STATE_KEY] = home_page
@@ -65,11 +67,27 @@ def main() -> None:
             ],
         }
     )
+    if restore_failed:
+        # 控えを読めていないあいだは、どの画面もデータを開かない（空の画面で入力させないため）
+        _restore_failed_screen()
+        return
     try:
         navigation.run()
     finally:
         # 保存ボタンのあとの再実行（st.rerun）でもここを通る。内容が変わっていれば控えを送る
         db_backup.backup_if_changed()
+
+
+def _restore_failed_screen() -> None:
+    st.title(APP_TITLE)
+    st.error(db_backup.status()["error"])
+    st.info(
+        "登録したスタッフなどのデータは、保存先（GitHub）に残っています。"
+        "読み込めるまで、入力はできません。"
+    )
+    if st.button("もう一度読み込む", type="primary"):
+        db_backup.retry_now()
+        st.rerun()
 
 
 def _show_backup_status() -> None:
