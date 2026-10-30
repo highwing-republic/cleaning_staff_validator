@@ -95,6 +95,8 @@ def _show_backup_status() -> None:
     state = db_backup.status()
     if state["error"]:
         (st.error if state["restore_failed"] else st.warning)(state["error"])
+    if state["notice"]:
+        st.warning(state["notice"])
     if state["enabled"]:
         saved_at = state["last_saved_at"]
         st.sidebar.caption(
