@@ -941,6 +941,63 @@ def _detect_fixed_conflicts(
     return conflicts
 
 
+def _regeneration_updates(
+    current: CurrentScheduleView,
+    result: ScheduleGenerationResult,
+    staff_names: dict[int, str] | None = None,
+) -> list[tuple[ScheduleChange, ScheduleAssignmentRecord]]:
+    """再生成で書き換えるセルを (プレビュー表示, 書き込む行) の組で返す.
+
+    プレビューと反映の両方がこの関数を使うため、「プレビューに出たもの = 反映で書くもの」になる。
+    対象は下書きの日の固定されていないセルだけ。出勤/休みも勤務時刻も変わらないセルは
+    書き換えない（手修正の印 source=MANUAL と保存済みの時刻を保つため）。
+    勤務時刻だけが変わるセル（勤務希望や通常勤務時間を直した場合）は変更として扱う。
+    """
+    names = staff_names or {}
+    updates: list[tuple[ScheduleChange, ScheduleAssignmentRecord]] = []
+    for assignment in result.assignments:
+        view = current.day(assignment.work_date)
+        if view is None or not view.is_editable:
+            continue
+        existing = view.assignments.get(assignment.staff_id)
+        if existing is not None and existing.locked:
+            continue
+
+        start_time = assignment.start_time if assignment.is_working else None
+        end_time = assignment.end_time if assignment.is_working else None
+        if (
+            existing is not None
+            and existing.is_working == assignment.is_working
+            and existing.start_time == start_time
+            and existing.end_time == end_time
+        ):
+            continue
+
+        change = ScheduleChange(
+            work_date=assignment.work_date,
+            staff_id=assignment.staff_id,
+            staff_name=names.get(assignment.staff_id, str(assignment.staff_id)),
+            before_is_working=existing.is_working if existing is not None else False,
+            after_is_working=assignment.is_working,
+            before_exists=existing is not None,
+            after_start_time=start_time,
+            after_end_time=end_time,
+            before_start_time=existing.start_time if existing is not None else None,
+            before_end_time=existing.end_time if existing is not None else None,
+        )
+        record = ScheduleAssignmentRecord(
+            work_date=assignment.work_date,
+            staff_id=assignment.staff_id,
+            is_working=assignment.is_working,
+            start_time=start_time,
+            end_time=end_time,
+            locked=False,
+            source=SCHEDULE_SOURCE_GENERATED,
+        )
+        updates.append((change, record))
+    return updates
+
+
 def preview_regenerated_schedule(
     conn: sqlite3.Connection,
     work_dates: list[str],
@@ -981,29 +1038,9 @@ def preview_regenerated_schedule(
     changes: list[ScheduleChange] = []
     if result.has_solution:
         staff_names = {s.staff_id: s.staff_name for s in request.staff}
-        for assignment in result.assignments:
-            view = current.day(assignment.work_date)
-            if view is None or not view.is_editable:
-                continue
-            existing = view.assignments.get(assignment.staff_id)
-            if existing is not None and existing.locked:
-                continue
-            if existing is not None and existing.is_working == assignment.is_working:
-                continue
-            changes.append(
-                ScheduleChange(
-                    work_date=assignment.work_date,
-                    staff_id=assignment.staff_id,
-                    staff_name=staff_names.get(assignment.staff_id, str(assignment.staff_id)),
-                    before_is_working=(
-                        existing.is_working if existing is not None else False
-                    ),
-                    after_is_working=assignment.is_working,
-                    before_exists=existing is not None,
-                    after_start_time=assignment.start_time,
-                    after_end_time=assignment.end_time,
-                )
-            )
+        changes = [
+            change for change, _record in _regeneration_updates(current, result, staff_names)
+        ]
 
     return RegenerationPreview(
         work_dates=list(work_dates),
@@ -1022,8 +1059,8 @@ def apply_regenerated_schedule(
 ) -> tuple[int | None, list[ValidationError]]:
     """再生成結果を反映する（run_id, エラー）を返す.
 
-    更新するのはDRAFT日の固定されていないセルだけ。
-    固定されたセルと確定日は現在値をそのまま残す。
+    更新するのはDRAFT日の固定されていないセルのうち、実際に変わるものだけ。
+    固定されたセル・確定日・変わらないセルは現在値（手修正の印や時刻）をそのまま残す。
     """
     if not preview.can_apply:
         return None, preview.errors or [
@@ -1034,26 +1071,7 @@ def apply_regenerated_schedule(
         ]
 
     current = get_current_schedule(conn, work_dates)
-    records: list[ScheduleAssignmentRecord] = []
-
-    for assignment in preview.result.assignments:
-        view = current.day(assignment.work_date)
-        if view is None or not view.is_editable:
-            continue
-        existing = view.assignments.get(assignment.staff_id)
-        if existing is not None and existing.locked:
-            continue
-        records.append(
-            ScheduleAssignmentRecord(
-                work_date=assignment.work_date,
-                staff_id=assignment.staff_id,
-                is_working=assignment.is_working,
-                start_time=assignment.start_time if assignment.is_working else None,
-                end_time=assignment.end_time if assignment.is_working else None,
-                locked=False,
-                source=SCHEDULE_SOURCE_GENERATED,
-            )
-        )
+    records = [record for _change, record in _regeneration_updates(current, preview.result)]
 
     run_id = repo.apply_regenerated_schedule(
         conn,

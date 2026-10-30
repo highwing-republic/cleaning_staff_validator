@@ -462,7 +462,15 @@ class GenerationRequest:
     # (staff_id, work_date) -> 1=出勤で固定 / 0=休みで固定. Hard Constraint として扱い、
     # 公平性や希望休のために動かさない
     fixed_assignments: dict[tuple[int, str], int] = field(default_factory=dict)
+    # None なら既定の上限を使う。0以下は計算できないので受け付けない
+    # （0 を黙って既定値へ読み替えないため）
     time_limit_seconds: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.time_limit_seconds is not None and self.time_limit_seconds <= 0:
+            raise ValueError(
+                f"time_limit_seconds must be positive: {self.time_limit_seconds!r}"
+            )
 
 
 @dataclass(frozen=True)
@@ -779,7 +787,11 @@ class CurrentScheduleView:
 
 @dataclass(frozen=True)
 class ScheduleChange:
-    """再生成プレビューで変わる1件（現在 → 再生成後）."""
+    """再生成プレビューで変わる1件（現在 → 再生成後）.
+
+    出勤/休みは同じで勤務時刻だけ変わる場合も1件として数える
+    （反映で書き換えるセルとプレビューの件数を一致させるため）。
+    """
 
     work_date: str
     staff_id: int
@@ -789,6 +801,8 @@ class ScheduleChange:
     before_exists: bool = True
     after_start_time: str | None = None
     after_end_time: str | None = None
+    before_start_time: str | None = None
+    before_end_time: str | None = None
 
 
 @dataclass(frozen=True)
