@@ -244,6 +244,41 @@ def staff_names_from_bytes(data: bytes, tmp_path: Path) -> list[str]:
     return staff_names(path)
 
 
+def test_empty_database_left_on_the_server_is_replaced_by_the_backup(remote, db_file, tmp_path):
+    """控えを読めない間に空のデータベースができ、そのあと上書き更新で起動し直した場合も、
+    空のデータベースを「サーバーに残っていたデータ」として控えへ送らず、控えから戻す."""
+    make_db(db_file)  # スタッフ0人
+    remote.put(make_db(tmp_path / "saved.db", "山田", "佐藤"))
+
+    db_backup.ensure_restored(CONFIG)
+    assert staff_names(db_file) == ["山田", "佐藤"]
+    open_app_once()
+    assert db_backup.backup_if_changed() is False
+    assert remote.uploads == []
+
+
+def test_empty_database_is_never_uploaded_over_a_backup_with_staff(remote, db_file, tmp_path):
+    """最後の安全装置: スタッフのいる控えを、スタッフ0人のデータベースで上書きしない."""
+    remote.put(make_db(tmp_path / "saved.db", "山田"))
+    db_backup.ensure_restored(CONFIG)
+    db_file.unlink()
+    make_db(db_file)  # 何かの理由で手元が空になった
+    saved = remote.data
+
+    assert db_backup.backup_if_changed() is False
+    assert remote.data == saved
+    assert db_backup.status()["error"] == BACKUP_FAILED_MESSAGE
+
+
+def test_first_staff_can_be_backed_up_when_the_backup_is_empty(remote, db_file, tmp_path):
+    """控えにまだスタッフがいない（使い始め）なら、空のデータベースも控えてよい."""
+    remote.put(make_db(tmp_path / "saved.db"))
+    db_backup.ensure_restored(CONFIG)
+    add_staff("田中")
+    assert db_backup.backup_if_changed() is True
+    assert staff_names_from_bytes(remote.data, tmp_path) == ["田中"]
+
+
 def test_restore_is_only_attempted_once_per_process(remote, db_file, tmp_path):
     remote.put(make_db(tmp_path / "saved.db", "山田"))
     db_backup.ensure_restored(CONFIG)

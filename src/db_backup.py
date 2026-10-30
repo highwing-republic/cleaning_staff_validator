@@ -213,6 +213,8 @@ class _State:
     local_existed_at_start: bool | None = None
     next_retry_at: datetime | None = None
     logged_no_config: bool = False
+    # 控えにスタッフが登録されているか（空のデータベースで上書きしないための目印）
+    remote_has_staff: bool = False
     remote_sha: str | None = None
     last_hash: str | None = None
     last_saved_at: datetime | None = None
@@ -280,6 +282,18 @@ def content_digest(path: Path) -> str:
     return digest.hexdigest()
 
 
+def has_staff(path: Path) -> bool:
+    """スタッフが1人でも登録されているか. スタッフは削除せず無効化するだけなので、
+    0人のデータベースは「作られたばかりの空のもの」とみなせる."""
+    connection = sqlite3.connect(f"{Path(path).resolve().as_uri()}?mode=ro", uri=True)
+    try:
+        return connection.execute("SELECT EXISTS (SELECT 1 FROM staff)").fetchone()[0] == 1
+    except sqlite3.Error:
+        return False  # 表がまだ無い
+    finally:
+        connection.close()
+
+
 def _describe(exc: Exception) -> str:
     """ログ用. BackupError は状態コードだけを持つ. それ以外は種類だけ（トークンを書き出さないため）."""
     return str(exc) if isinstance(exc, BackupError) else type(exc).__name__
@@ -334,21 +348,32 @@ def ensure_restored(config: BackupConfig | None = None) -> None:
         try:
             data, sha = _download_with_retries(client)
             if data is None:
+                _STATE.remote_has_staff = False
                 _log(f"no backup file yet in {config.repo}; it will be created on the first change")
-            elif _STATE.local_existed_at_start:
-                _log("kept the database that was already on this server")
             else:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 partial = path.with_suffix(path.suffix + ".restoring")
                 partial.write_bytes(data)
                 try:
                     digest = content_digest(partial)  # 壊れた控えで手元を置き換えない
+                    _STATE.remote_has_staff = has_staff(partial)
                 except Exception:
                     partial.unlink(missing_ok=True)
                     raise
-                partial.replace(path)
-                _STATE.last_hash = digest
-                _log(f"restored {len(data)} bytes from {config.repo}")
+                # 手元のデータベースを残すのは、起動時からあり、スタッフが登録されているときだけ。
+                # 控えを読めない間に作られた空のデータベースが残っていても、控えで置き換える
+                keep_local = (
+                    _STATE.local_existed_at_start and path.exists() and has_staff(path)
+                )
+                if keep_local:
+                    partial.unlink(missing_ok=True)
+                    _log("kept the database that was already on this server")
+                else:
+                    if path.exists():
+                        _log("the database on this server has no staff; using the backup instead")
+                    partial.replace(path)
+                    _STATE.last_hash = digest
+                    _log(f"restored {len(data)} bytes from {config.repo}")
         except Exception as exc:  # 読めなければ控えを送らない（空のデータで上書きしないため）
             _log(f"restore failed: {_describe(exc)}")
             _STATE.error = RESTORE_FAILED_MESSAGE
@@ -387,6 +412,12 @@ def backup_if_changed(config: BackupConfig | None = None) -> bool:
                 digest = content_digest(copy_path)
                 if digest == _STATE.last_hash:
                     return False
+                if _STATE.remote_has_staff and not has_staff(copy_path):
+                    # スタッフのいる控えを、スタッフ0人のデータベースで上書きしない（最後の安全装置）
+                    _log("refused to replace a backup that has staff with a database that has none")
+                    _STATE.error = BACKUP_FAILED_MESSAGE
+                    return False
+                local_has_staff = has_staff(copy_path)
                 data = copy_path.read_bytes()
             now = _now()
             message = f"backup: {config.path} ({now:%Y-%m-%d %H:%M} JST)"
@@ -404,6 +435,7 @@ def backup_if_changed(config: BackupConfig | None = None) -> bool:
         _STATE.remote_sha = sha
         _STATE.last_hash = digest
         _STATE.last_saved_at = now
+        _STATE.remote_has_staff = local_has_staff
         _STATE.error = None
         return True
 
