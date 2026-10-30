@@ -59,6 +59,13 @@ def select_period(key_prefix: str = "preference_period") -> tuple[str, int]:
     )
 
     start_key, days_key = f"{key_prefix}_start", f"{key_prefix}_days"
+    # ウィジェットは画面遷移で破棄されるため、共有期間を別の状態に保持する。
+    shared = st.session_state.get("_shared_period")
+    sync_key = f"_period_sync_{key_prefix}"
+    if shared and (st.session_state.get(sync_key) != shared
+                   or start_key not in st.session_state or days_key not in st.session_state):
+        st.session_state[start_key] = _date.fromisoformat(shared[0])
+        st.session_state[days_key] = shared[1]
     if start_key not in st.session_state:
         st.session_state[start_key] = _date.fromisoformat(default_period_start())
     if days_key not in st.session_state:
@@ -70,13 +77,15 @@ def select_period(key_prefix: str = "preference_period") -> tuple[str, int]:
     with right:
         days = st.selectbox(
             "期間",
-            options=list(PERIOD_DAY_OPTIONS),
+            options=sorted(set(PERIOD_DAY_OPTIONS) | {st.session_state[days_key]}),
             key=days_key,
             format_func=lambda d: f"{d}日間",
             help="現場は10〜14日先までを単位にシフトを組むため、最大14日としています。",
         )
 
     start_date = start.isoformat() if hasattr(start, "isoformat") else str(start)
+    st.session_state["_shared_period"] = (start_date, int(days))
+    st.session_state[sync_key] = (start_date, int(days))
     st.caption(f"対象期間: {format_period(start_date, int(days))}")
     return start_date, int(days)
 

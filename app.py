@@ -8,6 +8,7 @@
 import streamlit as st
 
 from src import services
+from src import guided_ui, guided_workflow
 from src.navigation import (
     APP_SUBTITLE,
     APP_TITLE,
@@ -47,8 +48,9 @@ def main() -> None:
     st.set_page_config(page_title=APP_TITLE, layout="wide")
     navigation = st.navigation(
         {
-            MAIN_SECTION_LABEL: [st.Page(home, title="ホーム", default=True)]
-            + [st.Page(path, title=title) for path, title in MAIN_PAGES],
+            MAIN_SECTION_LABEL: [st.Page(home, title="ホーム・かんたん作成", default=True)],
+            "スタッフ設定": [st.Page(MAIN_PAGES[0][0], title="スタッフ管理")],
+            "詳細操作（必要なときだけ）": [st.Page(path, title=title) for path, title in MAIN_PAGES[1:]],
             SUPPORT_SECTION_LABEL: [
                 st.Page(path, title=title) for path, title in SUPPORT_PAGES
             ],
@@ -59,30 +61,49 @@ def main() -> None:
 
 def home() -> None:
     st.title(APP_TITLE)
-    st.write(APP_SUBTITLE)
-    st.caption("左のメニューから各画面へ移動してください。")
-
-    st.subheader("勤務表作成の流れ")
-    for step in USAGE_STEPS:
-        st.write(step)
-
-    _show_status()
-
-    st.subheader("補助機能について")
-    st.caption(
-        "「勤怠CSV取込」「勤怠データ検証」は、勤怠システムから出した実績CSVを確認するための"
-        "以前からの機能です。勤務表づくりには使いません。"
-    )
+    conn = open_connection()
+    try:
+        guided_workflow.initialize(conn)
+        if st.session_state.get("_guided_mode"):
+            guided_ui.render(conn)
+            return
+        st.write("休みの希望を確認して、勤務表をつくりましょう。")
+        st.caption("期間を選ぶ → 休み・人数の確認 → 作成・手直し → 確定・印刷")
+        actions = (
+            ("勤務表をつくる", "new", "次の期間の勤務表を、案内に沿って作成します。"),
+            ("作成途中の勤務表を開く", "resume", "保存したところから再開します。"),
+            ("完成した勤務表を見る・印刷する", "completed", "確定済みの勤務表を確認・印刷します。"),
+        )
+        for label, mode, help_text in actions:
+            if st.button(label, key=f"home_{mode}", type="primary" if mode == "new" else "secondary", width="stretch"):
+                guided_ui.begin(mode)
+                st.rerun()
+            st.caption(help_text)
+        if not services.get_home_status(conn, period_dates(default_period_start(), PERIOD_DEFAULT_DAYS)).has_staff:
+            st.info("スタッフがまだ登録されていません。初回だけ「スタッフ管理」で通常の曜日・勤務時間を登録してください。")
+            if st.button("スタッフ設定を開く"):
+                st.switch_page("pages/01_staff.py")
+        with st.expander("登録状況・詳しい操作を確認する"):
+            _show_status()
+            for step in USAGE_STEPS:
+                st.write(step)
+            st.caption("勤怠CSVの補助機能は、通常の勤務表づくりには使いません。")
+    finally:
+        conn.close()
 
 
 def _show_status() -> None:
     """これから組む期間について、どこまで進んでいるかを示す."""
-    start_date = default_period_start()
-    dates = period_dates(start_date, PERIOD_DEFAULT_DAYS)
-    status = services.get_home_status(open_connection(), dates)
+    start_date, days = st.session_state.get("_shared_period", (default_period_start(), PERIOD_DEFAULT_DAYS))
+    dates = period_dates(start_date, days)
+    conn = open_connection()
+    try:
+        status = services.get_home_status(conn, dates)
+    finally:
+        conn.close()
 
     st.subheader("今の状況")
-    st.caption(f"対象期間: {format_period(start_date, PERIOD_DEFAULT_DAYS)}")
+    st.caption(f"対象期間: {format_period(start_date, days)}")
 
     cols = st.columns(5)
     cols[0].metric("登録スタッフ", f"{status.active_staff_count}名")
