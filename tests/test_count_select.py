@@ -19,3 +19,8 @@ def test_labels():
     assert format_count(None, "週{}日") == UNSET_LABEL == "未設定"
     assert format_count(5, "週{}日") == "週5日"
     assert format_count(3, "{}日まで") == "3日まで"
+
+
+def test_custom_unset_label():
+    assert format_count(None, "週{}日", "指定なし") == "指定なし"
+    assert format_count(2, "連続{}日まで", "指定なし") == "連続2日まで"
