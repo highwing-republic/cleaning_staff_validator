@@ -8,7 +8,7 @@
 import streamlit as st
 
 from src import services
-from src import guided_ui, guided_workflow
+from src import db_backup, guided_ui, guided_workflow
 from src.navigation import (
     APP_SUBTITLE,
     APP_TITLE,
@@ -48,6 +48,10 @@ __all__ = [
 
 def main() -> None:
     st.set_page_config(page_title=APP_TITLE, layout="wide")
+    # Streamlit Cloud ではサーバーのファイルが再起動で消えるため、
+    # どの画面よりも先に、非公開リポジトリの控えからデータを戻す（設定が無ければ何もしない）
+    db_backup.ensure_restored()
+    _show_backup_status()
     home_page = st.Page(home, title=PAGE_HOME, default=True)
     # スタッフ管理などから「ホーム・かんたん作成へ戻る」で戻れるようにする
     st.session_state[HOME_PAGE_STATE_KEY] = home_page
@@ -61,7 +65,24 @@ def main() -> None:
             ],
         }
     )
-    navigation.run()
+    try:
+        navigation.run()
+    finally:
+        # 保存ボタンのあとの再実行（st.rerun）でもここを通る。内容が変わっていれば控えを送る
+        db_backup.backup_if_changed()
+
+
+def _show_backup_status() -> None:
+    """自動の控えの状態を知らせる（設定が無いPC版では何も出さない）."""
+    state = db_backup.status()
+    if state["error"]:
+        (st.error if state["restore_failed"] else st.warning)(state["error"])
+    if state["enabled"]:
+        saved_at = state["last_saved_at"]
+        st.sidebar.caption(
+            "入力した内容は自動で保存先に控えています"
+            + (f"（最終 {saved_at:%m/%d %H:%M}）" if saved_at else "")
+        )
 
 
 def home() -> None:
