@@ -21,16 +21,18 @@ from src.constants import (
 )
 from src.navigation import (
     HEADING_STAFF,
-    PAGE_PREFERENCES,
+    PAGE_HOME,
     PAGE_STAFF,
 )
 from src.ui_common import (
     WEEKDAY_LABELS_JA,
+    back_to_home_button,
     format_optional_int,
     format_skill_level,
     format_weekdays,
     open_connection,
 )
+from src.time_select import time_select
 from src.work_time import format_standard_work_time
 
 st.set_page_config(page_title=PAGE_STAFF, layout="wide")
@@ -100,18 +102,20 @@ def _special_skill_multiselect(key: str, assigned: tuple[int, ...] = ()) -> list
     )
 
 
-def _standard_time_inputs(key_prefix: str, start: str | None, end: str | None) -> tuple[str, str]:
+def _standard_time_inputs(
+    key_prefix: str, start: str | None, end: str | None
+) -> tuple[str | None, str | None]:
+    """通常の開始・終了時刻をプルダウンで選ぶ（時は1時間刻み、分は 00 / 30）."""
     left, right = st.columns(2)
     with left:
-        start_value = st.text_input(
-            "通常開始時刻", value=start or "", placeholder="09:00", key=f"{key_prefix}_start"
-        )
+        start_value = time_select("通常開始時刻", start, key=f"{key_prefix}_start")
     with right:
-        end_value = st.text_input(
-            "通常終了時刻", value=end or "", placeholder="15:30", key=f"{key_prefix}_end"
-        )
+        end_value = time_select("通常終了時刻", end, key=f"{key_prefix}_end")
     preview = format_standard_work_time(start_value, end_value)
-    st.caption(f"通常勤務時間: {preview}" if preview else "通常勤務時間: 未設定")
+    st.caption(
+        f"通常勤務時間: {preview}" if preview
+        else "通常勤務時間: 未設定（「時」を選ぶと設定されます。分はふだん00分のままで構いません）"
+    )
     return start_value, end_value
 
 
@@ -312,7 +316,7 @@ with st.form("edit_staff_form"):
     )
     edit_weekdays = _weekday_checkboxes("edit", detail.weekdays)
     edit_start, edit_end = _standard_time_inputs(
-        "edit", target.standard_start_time, target.standard_end_time
+        f"edit_{edit_target}", target.standard_start_time, target.standard_end_time
     )
     edit_target_days, edit_max_days, edit_max_consecutive = _work_volume_inputs(
         "edit",
@@ -379,6 +383,7 @@ else:
 
 st.divider()
 st.caption(
-    f"スタッフの登録・確認が終わったら、「{PAGE_PREFERENCES}」で"
-    "紙に書かれた「普段と違う希望」を転記してください。"
+    f"スタッフの登録・確認が終わったら、「{PAGE_HOME}」に戻って勤務表づくりを続けてください。"
+    "休みの希望や必要人数の入力も、そこから順番に案内します。"
 )
+back_to_home_button()

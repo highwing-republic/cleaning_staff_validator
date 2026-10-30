@@ -12,10 +12,12 @@ from src import guided_ui, guided_workflow
 from src.navigation import (
     APP_SUBTITLE,
     APP_TITLE,
+    HOME_PAGE_STATE_KEY,
     MAIN_PAGES,
     MAIN_SECTION_LABEL,
     MENU_PAGES,
     PAGE_GENERATE,
+    PAGE_HOME,
     PAGE_OUTPUT,
     PAGE_REQUIREMENTS,
     PAGE_SCHEDULE,
@@ -46,9 +48,12 @@ __all__ = [
 
 def main() -> None:
     st.set_page_config(page_title=APP_TITLE, layout="wide")
+    home_page = st.Page(home, title=PAGE_HOME, default=True)
+    # スタッフ管理などから「ホーム・かんたん作成へ戻る」で戻れるようにする
+    st.session_state[HOME_PAGE_STATE_KEY] = home_page
     navigation = st.navigation(
         {
-            MAIN_SECTION_LABEL: [st.Page(home, title="ホーム・かんたん作成", default=True)],
+            MAIN_SECTION_LABEL: [home_page],
             "スタッフ設定": [st.Page(MAIN_PAGES[0][0], title="スタッフ管理")],
             "詳細操作（必要なときだけ）": [st.Page(path, title=title) for path, title in MAIN_PAGES[1:]],
             SUPPORT_SECTION_LABEL: [
@@ -85,6 +90,10 @@ def home() -> None:
                 st.switch_page("pages/01_staff.py")
         with st.expander("登録状況・詳しい操作を確認する"):
             _show_status()
+            st.caption(
+                "以下は詳細操作の画面で作る場合の流れです。"
+                "ふだんは上の「勤務表をつくる」から進めば、これらの画面を開く必要はありません。"
+            )
             for step in USAGE_STEPS:
                 st.write(step)
             st.caption("勤怠CSVの補助機能は、通常の勤務表づくりには使いません。")
