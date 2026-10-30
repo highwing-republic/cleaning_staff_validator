@@ -248,8 +248,8 @@ def test_staff_page_rejects_duplicate_employee_code(db_path):
 
     at = AppTest.from_file(_page("pages/01_staff.py"), default_timeout=30)
     at.run()
-    create_code = [t for t in at.text_input if t.label == "従業員番号" and t.key != "edit_employee_code"][0]
-    create_name = [t for t in at.text_input if t.label == "氏名" and t.key != "edit_name"][0]
+    create_code = [t for t in at.text_input if t.label == "従業員番号" and not (t.key or "").startswith("edit_")][0]
+    create_name = [t for t in at.text_input if t.label == "氏名" and not (t.key or "").startswith("edit_")][0]
     create_code.input("0015")
     create_name.input("重複")
     [b for b in at.button if b.label == "登録"][0].click()
@@ -271,8 +271,8 @@ def test_staff_page_edit_form_updates_skill_and_code(db_path):
     at.run()
     assert not at.exception
 
-    at.text_input(key="edit_employee_code").input("0100")
-    at.selectbox(key="edit_skill_level").select(5)
+    at.text_input(key=f"edit_{staff_id}_employee_code").input("0100")
+    at.selectbox(key=f"edit_{staff_id}_skill_level").select(5)
     [b for b in at.button if b.label == "更新"][0].click()
     at.run()
     assert not at.exception
@@ -528,9 +528,9 @@ def test_staff_page_edit_form_updates_standard_conditions(db_path):
     at = _open_staff_page()
     _set_time(at, f"edit_{staff_id}_end", 13)
     at.selectbox(key=f"edit_{staff_id}_target_days").set_value(3)
-    at.checkbox(key="edit_weekday_1").uncheck()
-    at.checkbox(key="edit_weekday_5").check()
-    at.multiselect(key="edit_special_skills").set_value([])
+    at.checkbox(key=f"edit_{staff_id}_weekday_1").uncheck()
+    at.checkbox(key=f"edit_{staff_id}_weekday_5").check()
+    at.multiselect(key=f"edit_{staff_id}_special_skills").set_value([])
     [b for b in at.button if b.label == "更新"][0].click()
     at.run()
     assert not at.exception
@@ -601,9 +601,9 @@ def test_staff_page_edit_form_prefills_existing_conditions(db_path):
     assert at.selectbox(key=f"edit_{staff_id}_end_hour").value == 14
     assert at.selectbox(key=f"edit_{staff_id}_end_minute").value == "30"
     assert at.selectbox(key=f"edit_{staff_id}_target_days").value == 4
-    assert at.checkbox(key="edit_weekday_0").value is True
-    assert at.checkbox(key="edit_weekday_1").value is False
-    assert at.checkbox(key="edit_weekday_2").value is True
+    assert at.checkbox(key=f"edit_{staff_id}_weekday_0").value is True
+    assert at.checkbox(key=f"edit_{staff_id}_weekday_1").value is False
+    assert at.checkbox(key=f"edit_{staff_id}_weekday_2").value is True
 
 
 # ---------------------------------------------------------------------------
@@ -2938,3 +2938,64 @@ def result_status_word(text):
     from src.constants import SOLVER_STATUSES
 
     return [s for s in SOLVER_STATUSES if s in text]
+
+
+def _create_two_staff(db_path):
+    conn = get_connection(str(db_path))
+    first = repo.create_staff(
+        conn, "1", "テスト太郎", LEADER, 4, "清掃",
+        standard_start_time="09:00", standard_end_time="15:30",
+        target_days_per_week=5, weekdays=[0, 1, 2, 3, 4],
+    )
+    second = repo.create_staff(
+        conn, "15", "渡瀬 二美", CLEANER, 3, "客室",
+        standard_start_time="10:00", standard_end_time="14:00",
+        target_days_per_week=3, weekdays=[5, 6],
+    )
+    conn.close()
+    return first, second
+
+
+def test_switching_the_staff_to_edit_shows_that_staffs_details(db_path):
+    """編集するスタッフを選び直したら、入力欄もすべてそのスタッフの内容になる（前の人の値が残らない）."""
+    first, second = _create_two_staff(db_path)
+    at = _open_staff_page()
+    assert at.selectbox(key="edit_target_staff").value == first
+
+    at.selectbox(key="edit_target_staff").set_value(second).run()
+    assert not at.exception
+    edit = {t.label: t.value for t in at.text_input if t.key and t.key.startswith("edit_")}
+    assert edit == {"従業員番号": "15", "氏名": "渡瀬 二美", "部門": "客室"}
+    assert at.selectbox(key=f"edit_{second}_role_id").value == CLEANER
+    assert at.selectbox(key=f"edit_{second}_skill_level").value == 3
+    assert at.checkbox(key=f"edit_{second}_weekday_0").value is False
+    assert at.checkbox(key=f"edit_{second}_weekday_5").value is True
+    assert at.selectbox(key=f"edit_{second}_target_days").value == 3
+
+
+def test_updating_after_switching_saves_to_the_selected_staff(db_path):
+    """選び直してから更新しても、「従業員番号はすでに登録されています」にならず、選んだ人だけが変わる."""
+    first, second = _create_two_staff(db_path)
+    at = _open_staff_page()
+    at.selectbox(key="edit_target_staff").set_value(second).run()
+    at.selectbox(key=f"edit_{second}_target_days").set_value(4)
+    [b for b in at.button if b.label == "更新"][0].click()
+    at.run()
+    assert not at.exception
+    assert not [e for e in at.error if "すでに登録されています" in e.value]
+
+    conn = get_connection(str(db_path))
+    updated, untouched = repo.get_staff(conn, second), repo.get_staff(conn, first)
+    conn.close()
+    assert (updated.employee_code, updated.staff_name, updated.target_days_per_week) == ("15", "渡瀬 二美", 4)
+    assert (untouched.employee_code, untouched.staff_name, untouched.target_days_per_week) == ("1", "テスト太郎", 5)
+
+
+def test_deactivate_confirmation_does_not_carry_over_to_another_staff(db_path):
+    """無効化の確認チェックは、別のスタッフを選んだら外れる（違う人を無効化しないように）."""
+    first, second = _create_two_staff(db_path)
+    at = _open_staff_page()
+    at.checkbox(key=f"deactivate_confirm_{first}").check().run()
+    at.selectbox(key="edit_target_staff").set_value(second).run()
+    assert at.checkbox(key=f"deactivate_confirm_{second}").value is False
+    assert [b for b in at.button if b.label == "無効化する"][0].disabled
