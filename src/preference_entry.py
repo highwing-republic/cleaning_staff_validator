@@ -18,14 +18,12 @@ from src.models import StaffDatePreferenceInput, StaffDayCondition, StaffDetail
 from src.period_utils import format_date_short
 from src.time_select import time_select
 from src.ui_common import show_errors
-from src.work_time import format_standard_work_time
 
 OFF_NONE = "休みの希望なし"
 OFF_ABSOLUTE = "必ず休み"
 OFF_PREFER = "できれば休み"
 OFF_CHOICES: tuple[str, ...] = (OFF_NONE, OFF_ABSOLUTE, OFF_PREFER)
 
-SAVE_BUTTON = "この日の希望を保存"
 EDIT_BUTTON = "直す"
 RESET_BUTTON = "通常に戻す"
 
@@ -110,16 +108,20 @@ def summarize_preference(pref: StaffDatePreferenceInput) -> str:
     return "・".join(parts)
 
 
+def save_button_label(work_date: str) -> str:
+    """保存ボタンの文言. 「この日」ではなく日付を書く（どの日を保存するか迷わないように）."""
+    return f"{format_date_short(work_date)}の希望を保存"
+
+
 def describe_normal_day(condition: StaffDayCondition, detail: StaffDetail) -> str:
-    """選んだ日の「普段」の説明."""
+    """選んだスタッフ・日付の「普段」の説明（例 '太郎の 11/1(日) は、普段は休みの曜日です。'）."""
+    subject = f"{detail.staff.staff_name}の {format_date_short(condition.work_date)} は、"
     if not condition.base_available:
-        return "この日は普段は休みの曜日です。"
-    standard = format_standard_work_time(
-        detail.staff.standard_start_time, detail.staff.standard_end_time
-    )
-    if standard:
-        return f"この日は普段どおりなら {standard} の勤務です。"
-    return "この日は普段の勤務日です（通常勤務時間は未設定）。"
+        return f"{subject}普段は休みの曜日です。"
+    start, end = detail.staff.standard_start_time, detail.staff.standard_end_time
+    if start and end:
+        return f"{subject}普段どおりなら {start}-{end} の勤務です。"
+    return f"{subject}普段の勤務日です（通常勤務時間は未設定）。"
 
 
 # ---------------------------------------------------------------------------
@@ -216,17 +218,18 @@ def _entry_form(
     standard_start = detail.staff.standard_start_time
     standard_end = detail.staff.standard_end_time
 
-    st.caption(describe_normal_day(condition, detail))
+    day = format_date_short(work_date)
+    st.info(describe_normal_day(condition, detail))
     if not (standard_start and standard_end):
         st.warning(
-            "このスタッフは通常勤務時間が未設定です。"
+            f"{names[staff_id]}は通常勤務時間が未設定です。"
             "「スタッフ設定」で登録すると、遅出・早上がりの時刻が確定します。"
         )
 
     # スタッフ・日付ごとに入力欄を分け、選び直したときに前の入力が残らないようにする
     prefix = f"{key}_{staff_id}_{work_date}"
     off_choice = st.radio(
-        "休み",
+        f"{day}の休み",
         OFF_CHOICES,
         index=OFF_CHOICES.index(off_choice_of(existing)),
         horizontal=True,
@@ -238,12 +241,13 @@ def _entry_form(
     if off_choice != OFF_ABSOLUTE:
         if not condition.base_available:
             available_extra = st.checkbox(
-                "この日は勤務できる（普段は休みの曜日）",
+                f"{day}は勤務できる（普段は休みの曜日）",
                 value=bool(existing and existing.available_extra),
                 key=f"{prefix}_extra",
             )
         st.caption(
-            "勤務時間は普段どおりなら変えなくて構いません。遅出・早上がりのときだけ変えます。"
+            f"{day}の勤務時間は、普段どおりなら変えなくて構いません。"
+            "遅出・早上がりのときだけ変えます。"
         )
         has_standard = bool(standard_start and standard_end)
         time_left, time_right = st.columns(2)
@@ -269,7 +273,7 @@ def _entry_form(
         key=f"{prefix}_note",
     )
 
-    if st.button(SAVE_BUTTON, type="primary", key=f"{key}_save"):
+    if st.button(save_button_label(work_date), type="primary", key=f"{key}_save"):
         pref = build_preference(
             staff_id,
             work_date,
@@ -283,7 +287,7 @@ def _entry_form(
             existing=existing,
         )
         _save(conn, pref, names[staff_id], on_saved)
-    st.caption("何も変えずに保存すると、その日は普段どおりに戻ります。")
+    st.caption(f"何も変えずに保存すると、{day}は普段どおりに戻ります。")
 
 
 def render_preference_entry(
