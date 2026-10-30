@@ -32,6 +32,8 @@ from src.ui_common import (
     format_weekdays,
     open_connection,
 )
+from src.count_select import count_select
+from src.period_utils import PERIOD_MAX_DAYS
 from src.time_select import time_select
 from src.work_time import format_standard_work_time
 
@@ -55,13 +57,6 @@ special_skill_name_by_id = services.get_special_skill_names(conn)
 def _optional_text(value: str) -> str | None:
     text = value.strip() if isinstance(value, str) else ""
     return text or None
-
-
-def _optional_int(value) -> int | None:
-    """number_input の値を任意整数にする（未入力はNone）."""
-    if value is None or value == "":
-        return None
-    return int(value)
 
 
 def _employee_code_taken(employee_code: str, exclude_staff_id: int | None = None) -> bool:
@@ -125,40 +120,42 @@ def _work_volume_inputs(
     max_days: int | None = None,
     max_consecutive: int | None = None,
 ) -> tuple[int | None, int | None, int | None]:
-    """勤務量の任意項目。未入力（空欄）は「条件なし」として保存する."""
+    """勤務量の任意項目をプルダウンで選ぶ。「未設定」は条件なしとして保存する.
+
+    数値の入力欄は空欄だと −／＋ が押せず「入力できない」ように見えるため、選ぶだけにしている。
+    """
     left, center, right = st.columns(3)
     with left:
-        target = st.number_input(
+        target = count_select(
             "目標勤務日数 / 週（任意）",
-            min_value=TARGET_DAYS_PER_WEEK_MIN,
-            max_value=TARGET_DAYS_PER_WEEK_MAX,
-            value=target_days,
-            step=1,
+            range(TARGET_DAYS_PER_WEEK_MIN, TARGET_DAYS_PER_WEEK_MAX + 1),
+            target_days,
             key=f"{key_prefix}_target_days",
-            help="普段、週に何日程度勤務したいか。未入力なら目標勤務日数の条件なしとして扱います。",
+            unit="週{}日",
+            help="普段、週に何日程度勤務したいか。未設定なら目標勤務日数の条件なしとして扱います。",
         )
     with center:
-        max_period = st.number_input(
+        max_period = count_select(
             "期間内最大勤務日数（任意）",
-            min_value=1,
-            value=max_days,
-            step=1,
+            range(1, PERIOD_MAX_DAYS + 1),
+            max_days,
             key=f"{key_prefix}_max_days",
+            unit="{}日まで",
             help=(
                 "スタッフ個別の勤務量上限を将来設定するための欄です。"
                 "期間の長さによって意味が変わるため、現時点では判定に使いません。"
             ),
         )
     with right:
-        consecutive = st.number_input(
+        consecutive = count_select(
             "最大連続勤務日数（任意）",
-            min_value=1,
-            value=max_consecutive,
-            step=1,
+            range(1, PERIOD_MAX_DAYS + 1),
+            max_consecutive,
             key=f"{key_prefix}_max_consecutive",
-            help="未入力なら個別の上限なしとして扱います。",
+            unit="{}日まで",
+            help="続けて勤務してよい日数の上限。未設定なら個別の上限なしとして扱います。",
         )
-    return _optional_int(target), _optional_int(max_period), _optional_int(consecutive)
+    return target, max_period, consecutive
 
 
 # ---------------------------------------------------------------------------
@@ -319,7 +316,7 @@ with st.form("edit_staff_form"):
         f"edit_{edit_target}", target.standard_start_time, target.standard_end_time
     )
     edit_target_days, edit_max_days, edit_max_consecutive = _work_volume_inputs(
-        "edit",
+        f"edit_{edit_target}",
         target.target_days_per_week,
         target.max_days_per_period,
         target.max_consecutive_days,
