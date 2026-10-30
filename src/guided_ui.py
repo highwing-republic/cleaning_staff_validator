@@ -6,6 +6,13 @@ import pandas as pd
 import streamlit as st
 
 from src import guided_workflow as workflow, repositories as repo, services
+from src.daily_count_rows import (
+    STAFF_COLUMN,
+    build_schedule_table,
+    counts_from_generation,
+    counts_from_validation,
+    table_styles,
+)
 from src.period_utils import default_period_start, format_date_short, format_period, period_dates
 from src.preference_entry import render_preference_entry
 from src.schedule_print import build_schedule_print_html
@@ -171,13 +178,27 @@ def _inputs(conn, start, days, dates):
             st.rerun()
 
 
+def _show_schedule_table(rows, dates, counts):
+    """勤務表を、先頭に日ごとの出勤人数・必要人数を付けて表示する（不足は赤、多すぎは黄色）."""
+    table = build_schedule_table(rows, dates, counts, format_date_short)
+    styles = table_styles(table, dates, counts, format_date_short)
+    st.caption("いちばん上の2行が、日ごとの出勤人数と必要人数です。足りない日は赤く表示します。")
+    st.dataframe(
+        table.style.apply(lambda _: styles, axis=None),
+        hide_index=True,
+        width="stretch",
+        # 横に動かしても誰の行か分かるよう、スタッフ名の列を固定する
+        column_config={STAFF_COLUMN: st.column_config.Column(pinned=True)},
+    )
+
+
 def _saved_table(conn, dates):
     export = services.build_schedule_export(conn, dates)
     rows = [{"スタッフ": row.staff.staff_name,
              **{format_date_short(d): row.cells.get(d, "未作成") for d in dates},
              "勤務日数": row.working_days} for row in export.staff_rows]
     if rows:
-        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+        _show_schedule_table(rows, dates, counts_from_validation(export.validation))
     return export
 
 
@@ -202,7 +223,8 @@ def _schedule(conn, start, days, dates):
         for summary in result.staff_summaries:
             cells = {a.work_date: f"{a.start_time}–{a.end_time}" if a.is_working else "休" for a in result.assignments if a.staff_id == summary.staff_id}
             rows.append({"スタッフ": summary.staff_name, **{format_date_short(d): cells[d] for d in dates}, "勤務日数": summary.scheduled_days})
-        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+        maximums = {r.work_date: r.max_total_staff for r in repo.list_daily_requirements(conn, dates[0], dates[-1])}
+        _show_schedule_table(rows, dates, counts_from_generation(result, maximums))
         for day in result.shortage_days:
             st.warning(f"{format_date_short(day.work_date)}：人数 {day.staff_shortage}人不足／役割 {sum(day.role_shortages.values())}人不足／スキル {day.skill_shortage}人不足（同じ人の不足が重なる場合があります）")
         changes = []
