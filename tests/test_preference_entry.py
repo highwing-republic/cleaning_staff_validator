@@ -13,12 +13,15 @@ from src import repositories as repo
 from src.database import get_connection, initialize_database
 from src.models import StaffDatePreferenceInput
 from src.period_utils import period_dates
+from src.models import StaffDayCondition, StaffDetail, StaffInput
 from src.preference_entry import (
     OFF_ABSOLUTE,
     OFF_NONE,
     OFF_PREFER,
     build_preference,
+    describe_normal_day,
     off_choice_of,
+    save_button_label,
     summarize_preference,
 )
 from src.ui_common import DB_PATH_ENV
@@ -206,7 +209,7 @@ def test_times_default_to_the_staffs_normal_hours(db):
     assert at.selectbox(key=f"{prefix}_start_minute").value == "00"
     assert at.selectbox(key=f"{prefix}_end_hour").value == 15
     assert at.selectbox(key=f"{prefix}_end_minute").value == "30"
-    assert any("09:00-15:30" in c.value for c in at.caption)
+    assert any("09:00-15:30" in i.value for i in at.info)
 
 
 def test_register_absolute_off(db):
@@ -247,7 +250,7 @@ def test_register_extra_day_on_a_normally_off_weekday(db):
     path, ids = db
     at = open_step2()
     prefix = choose(at, ids["weekday"], SUNDAY)
-    assert any("普段は休みの曜日" in c.value for c in at.caption)
+    assert any("普段は休みの曜日" in i.value for i in at.info)
     at.checkbox(key=f"{prefix}_extra").check().run()
     press(at, key="gw_pref_save")
     assert saved(path, ids["weekday"], SUNDAY).available_extra is True
@@ -328,3 +331,55 @@ def test_switching_day_does_not_carry_unsaved_input(db):
     press(at, key="gw_pref_save")
     assert saved(path, ids["full"], DATES[2]) is None
     assert saved(path, ids["full"], DAY) is None
+
+
+# ---------------------------------------------------------------------------
+# 「この日」ではなく具体的な日付で書く
+# ---------------------------------------------------------------------------
+
+
+def _detail(start="09:00", end="19:00"):
+    return StaffDetail(staff=StaffInput(1, "0001", "太郎", 3, 3, "清掃", True, start, end))
+
+
+def _condition(work_date, base_available):
+    return StaffDayCondition(staff_id=1, work_date=work_date, base_available=base_available,
+                             can_work=base_available)
+
+
+def test_describe_a_normally_off_day_with_the_date():
+    text = describe_normal_day(_condition("2026-11-01", False), _detail())
+    assert text == "太郎の 11/1(日) は、普段は休みの曜日です。"
+
+
+def test_describe_a_work_day_with_the_date_and_hours():
+    text = describe_normal_day(_condition("2026-11-02", True), _detail())
+    assert text == "太郎の 11/2(月) は、普段どおりなら 09:00-19:00 の勤務です。"
+
+
+def test_describe_a_work_day_without_hours():
+    text = describe_normal_day(_condition("2026-11-02", True), _detail(None, None))
+    assert "11/2(月)" in text and "未設定" in text
+
+
+def test_save_button_names_the_date():
+    assert save_button_label("2026-11-01") == "11/1(日)の希望を保存"
+
+
+def test_entry_form_names_the_selected_date_instead_of_this_day(db):
+    """選んだ日付が説明・選択肢・ボタンに書かれ、「この日」という書き方をしない."""
+    path, ids = db
+    at = open_step2()
+    prefix = choose(at, ids["weekday"], SUNDAY)
+
+    assert any("11/8(日) は、普段は休みの曜日です" in i.value for i in at.info)
+    assert at.radio(key=f"{prefix}_off").label == "11/8(日)の休み"
+    assert at.checkbox(key=f"{prefix}_extra").label.startswith("11/8(日)は勤務できる")
+    assert at.button(key="gw_pref_save").label == "11/8(日)の希望を保存"
+
+    shown = " ".join(
+        [i.value for i in at.info] + [c.value for c in at.caption]
+        + [r.label for r in at.radio] + [c.label for c in at.checkbox] + [b.label for b in at.button]
+    )
+    assert "この日" not in shown
+    assert "その日" not in shown
