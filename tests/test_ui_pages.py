@@ -342,11 +342,24 @@ def test_staff_page_time_dropdown_is_hourly_with_optional_half_hour(db_path):
 
 
 def test_staff_page_shows_work_volume_inputs(db_path):
+    """勤務量は数値入力欄でなくプルダウン（空欄だと −／＋ が押せず入力できないように見えるため）."""
     at = _open_staff_page()
-    labels = [n.label for n in at.number_input]
+    labels = [s.label for s in at.selectbox]
     assert "目標勤務日数 / 週（任意）" in labels
     assert "期間内最大勤務日数（任意）" in labels
     assert "最大連続勤務日数（任意）" in labels
+    assert not [n for n in at.number_input if "勤務日数" in n.label]
+
+
+def test_work_volume_dropdowns_start_unset_with_day_choices(db_path):
+    at = _open_staff_page()
+    target = at.selectbox(key="create_target_days")
+    assert target.value is None
+    assert target.options == ["未設定"] + [f"週{n}日" for n in range(1, 8)]
+    consecutive = at.selectbox(key="create_max_consecutive")
+    assert consecutive.value is None
+    assert consecutive.options[:3] == ["未設定", "1日まで", "2日まで"]
+    assert consecutive.options[-1] == "14日まで"
 
 
 def test_staff_page_offers_heavy_work_special_skill(db_path):
@@ -366,8 +379,8 @@ def test_staff_page_creates_staff_with_standard_conditions(db_path):
     at.selectbox[1].select(4)                                     # 総合スキル
     _set_time(at, "create_start", 9)
     _set_time(at, "create_end", 15, "30")
-    at.number_input(key="create_target_days").set_value(4)
-    at.number_input(key="create_max_consecutive").set_value(5)
+    at.selectbox(key="create_target_days").set_value(4)
+    at.selectbox(key="create_max_consecutive").set_value(5)
     # format_func付きのmultiselectでは set_value で表示名を渡す
     at.multiselect(key="create_special_skills").set_value(["力仕事可"])
     for weekday in (0, 1, 3, 4, 5):
@@ -514,7 +527,7 @@ def test_staff_page_edit_form_updates_standard_conditions(db_path):
 
     at = _open_staff_page()
     _set_time(at, f"edit_{staff_id}_end", 13)
-    at.number_input(key="edit_target_days").set_value(3)
+    at.selectbox(key=f"edit_{staff_id}_target_days").set_value(3)
     at.checkbox(key="edit_weekday_1").uncheck()
     at.checkbox(key="edit_weekday_5").check()
     at.multiselect(key="edit_special_skills").set_value([])
@@ -552,6 +565,27 @@ def test_staff_page_edit_keeps_a_saved_time_outside_the_choices(db_path):
     assert (saved.standard_start_time, saved.standard_end_time) == ("09:15", "15:30")
 
 
+def test_staff_page_edit_keeps_saved_day_counts_outside_the_choices(db_path):
+    """以前の入力で保存した 20日 のような値も、開いて保存しただけでは変わらない."""
+    conn = get_connection(str(db_path))
+    staff_id = repo.create_staff(
+        conn, "0023", "Lさん", CLEANER, 3, "清掃",
+        max_days_per_period=20, max_consecutive_days=5, weekdays=[0, 1, 2],
+    )
+    conn.close()
+
+    at = _open_staff_page()
+    assert at.selectbox(key=f"edit_{staff_id}_max_days").value == 20
+    [b for b in at.button if b.label == "更新"][0].click()
+    at.run()
+    assert not at.exception
+
+    conn = get_connection(str(db_path))
+    saved = repo.get_staff(conn, staff_id)
+    conn.close()
+    assert (saved.max_days_per_period, saved.max_consecutive_days) == (20, 5)
+
+
 def test_staff_page_edit_form_prefills_existing_conditions(db_path):
     conn = get_connection(str(db_path))
     staff_id = repo.create_staff(
@@ -566,7 +600,7 @@ def test_staff_page_edit_form_prefills_existing_conditions(db_path):
     assert at.selectbox(key=f"edit_{staff_id}_start_minute").value == "30"
     assert at.selectbox(key=f"edit_{staff_id}_end_hour").value == 14
     assert at.selectbox(key=f"edit_{staff_id}_end_minute").value == "30"
-    assert at.number_input(key="edit_target_days").value == 4
+    assert at.selectbox(key=f"edit_{staff_id}_target_days").value == 4
     assert at.checkbox(key="edit_weekday_0").value is True
     assert at.checkbox(key="edit_weekday_1").value is False
     assert at.checkbox(key="edit_weekday_2").value is True
