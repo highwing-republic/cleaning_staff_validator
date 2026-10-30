@@ -298,6 +298,12 @@ def _open_staff_page():
     return at
 
 
+def _set_time(at, key, hour, minute="00"):
+    """時刻のプルダウン（時・分）を選ぶ. key は widget key の接頭辞."""
+    at.selectbox(key=f"{key}_hour").set_value(hour)
+    at.selectbox(key=f"{key}_minute").set_value(minute)
+
+
 def _heavy_work_id(db_path):
     conn = get_connection(str(db_path))
     skill_id = repo.list_special_skills(conn)[0].special_skill_id
@@ -313,10 +319,26 @@ def test_staff_page_shows_weekday_checkboxes(db_path):
 
 
 def test_staff_page_shows_standard_time_inputs(db_path):
+    """通常の開始・終了時刻はプルダウンで選ぶ（手入力欄にしない）."""
     at = _open_staff_page()
-    labels = [t.label for t in at.text_input]
+    labels = [s.label for s in at.selectbox]
     assert "通常開始時刻" in labels
     assert "通常終了時刻" in labels
+    assert "通常開始時刻" not in [t.label for t in at.text_input]
+
+
+def test_staff_page_time_dropdown_is_hourly_with_optional_half_hour(db_path):
+    """「時」は1時間刻み、「分」は 00 と 30 から選べる."""
+    at = _open_staff_page()
+    hours = at.selectbox(key="create_start_hour").options
+    minutes = at.selectbox(key="create_start_minute").options
+    assert hours[0] == "未設定"
+    assert "9時" in hours and "10時" in hours
+    assert "9時30分" not in hours
+    assert minutes == ["00分", "30分"]
+    # 何も選ばなければ未設定・00分
+    assert at.selectbox(key="create_start_hour").value is None
+    assert at.selectbox(key="create_start_minute").value == "00"
 
 
 def test_staff_page_shows_work_volume_inputs(db_path):
@@ -342,8 +364,8 @@ def test_staff_page_creates_staff_with_standard_conditions(db_path):
     at.text_input[0].input("0007")
     at.text_input[1].input("Aさん")
     at.selectbox[1].select(4)                                     # 総合スキル
-    at.text_input(key="create_start").input("09:00")
-    at.text_input(key="create_end").input("15:30")
+    _set_time(at, "create_start", 9)
+    _set_time(at, "create_end", 15, "30")
     at.number_input(key="create_target_days").set_value(4)
     at.number_input(key="create_max_consecutive").set_value(5)
     # format_func付きのmultiselectでは set_value で表示名を渡す
@@ -373,8 +395,8 @@ def test_staff_page_creates_short_time_part_timer(db_path):
     at = _open_staff_page()
     at.text_input[0].input("0008")
     at.text_input[1].input("Bさん")
-    at.text_input(key="create_start").input("09:00")
-    at.text_input(key="create_end").input("13:00")
+    _set_time(at, "create_start", 9)
+    _set_time(at, "create_end", 13)
     [b for b in at.button if b.label == "登録"][0].click()
     at.run()
     assert not at.exception
@@ -389,8 +411,8 @@ def test_staff_page_rejects_end_before_start(db_path):
     at = _open_staff_page()
     at.text_input[0].input("0009")
     at.text_input[1].input("Cさん")
-    at.text_input(key="create_start").input("15:00")
-    at.text_input(key="create_end").input("09:00")
+    _set_time(at, "create_start", 15)
+    _set_time(at, "create_end", 9)
     [b for b in at.button if b.label == "登録"][0].click()
     at.run()
     assert not at.exception
@@ -405,7 +427,7 @@ def test_staff_page_rejects_start_time_only(db_path):
     at = _open_staff_page()
     at.text_input[0].input("0010")
     at.text_input[1].input("Dさん")
-    at.text_input(key="create_start").input("09:00")
+    _set_time(at, "create_start", 9)
     [b for b in at.button if b.label == "登録"][0].click()
     at.run()
     assert not at.exception
@@ -439,8 +461,8 @@ def test_staff_page_created_staff_appears_in_list(db_path):
     at = _open_staff_page()
     at.text_input[0].input("0012")
     at.text_input[1].input("Fさん")
-    at.text_input(key="create_start").input("09:00")
-    at.text_input(key="create_end").input("15:30")
+    _set_time(at, "create_start", 9)
+    _set_time(at, "create_end", 15, "30")
     for weekday in (0, 2, 4):
         at.checkbox(key=f"create_weekday_{weekday}").check()
     [b for b in at.button if b.label == "登録"][0].click()
@@ -491,7 +513,7 @@ def test_staff_page_edit_form_updates_standard_conditions(db_path):
     conn.close()
 
     at = _open_staff_page()
-    at.text_input(key="edit_end").input("13:00")
+    _set_time(at, f"edit_{staff_id}_end", 13)
     at.number_input(key="edit_target_days").set_value(3)
     at.checkbox(key="edit_weekday_1").uncheck()
     at.checkbox(key="edit_weekday_5").check()
@@ -509,9 +531,30 @@ def test_staff_page_edit_form_updates_standard_conditions(db_path):
     assert detail.special_skill_ids == ()
 
 
+def test_staff_page_edit_keeps_a_saved_time_outside_the_choices(db_path):
+    """以前の手入力で保存した 09:15 のような時刻も、開いて保存しただけでは変わらない."""
+    conn = get_connection(str(db_path))
+    staff_id = repo.create_staff(
+        conn, "0022", "Kさん", CLEANER, 3, "清掃",
+        standard_start_time="09:15", standard_end_time="15:30", weekdays=[0, 1, 2],
+    )
+    conn.close()
+
+    at = _open_staff_page()
+    assert "15分" in at.selectbox(key=f"edit_{staff_id}_start_minute").options
+    [b for b in at.button if b.label == "更新"][0].click()
+    at.run()
+    assert not at.exception
+
+    conn = get_connection(str(db_path))
+    saved = repo.get_staff(conn, staff_id)
+    conn.close()
+    assert (saved.standard_start_time, saved.standard_end_time) == ("09:15", "15:30")
+
+
 def test_staff_page_edit_form_prefills_existing_conditions(db_path):
     conn = get_connection(str(db_path))
-    repo.create_staff(
+    staff_id = repo.create_staff(
         conn, "0021", "Jさん", CLEANER, 3, "清掃",
         standard_start_time="09:30", standard_end_time="14:30",
         target_days_per_week=4, weekdays=[0, 2],
@@ -519,8 +562,10 @@ def test_staff_page_edit_form_prefills_existing_conditions(db_path):
     conn.close()
 
     at = _open_staff_page()
-    assert at.text_input(key="edit_start").value == "09:30"
-    assert at.text_input(key="edit_end").value == "14:30"
+    assert at.selectbox(key=f"edit_{staff_id}_start_hour").value == 9
+    assert at.selectbox(key=f"edit_{staff_id}_start_minute").value == "30"
+    assert at.selectbox(key=f"edit_{staff_id}_end_hour").value == 14
+    assert at.selectbox(key=f"edit_{staff_id}_end_minute").value == "30"
     assert at.number_input(key="edit_target_days").value == 4
     assert at.checkbox(key="edit_weekday_0").value is True
     assert at.checkbox(key="edit_weekday_1").value is False

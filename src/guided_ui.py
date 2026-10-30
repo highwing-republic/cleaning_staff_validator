@@ -6,10 +6,9 @@ import pandas as pd
 import streamlit as st
 
 from src import guided_workflow as workflow, repositories as repo, services
-from src.models import StaffDatePreferenceInput
 from src.period_utils import default_period_start, format_date_short, format_period, period_dates
+from src.preference_entry import render_preference_entry
 from src.schedule_print import build_schedule_print_html
-from src.ui_common import show_errors
 
 
 def _flash(message):
@@ -122,39 +121,15 @@ def _inputs(conn, start, days, dates):
         return
 
     st.markdown("**普段と違う希望だけ登録してください**")
-    prefs = repo.list_preferences_in_period(conn, dates[0], dates[-1])
-    names = {s.staff_id: s.staff_name for s in staff}
-    if prefs:
-        st.dataframe(pd.DataFrame([{
-            "スタッフ": names.get(p.staff_id, str(p.staff_id)), "日付": format_date_short(p.work_date),
-            "希望": "必ず休み" if p.absolute_off else "できれば休み" if p.prefer_off else "追加で勤務可能" if p.available_extra else "時間変更・メモ",
-            "開始": p.override_start_time or "通常どおり", "終了": p.override_end_time or "通常どおり", "メモ": p.note or "",
-        } for p in prefs]), hide_index=True, width="stretch")
-    else:
-        st.info("特別な希望は登録されていません。変更がなければ、下の必要人数を確認して進めます。")
-    with st.expander("休み・勤務時間の希望を登録／修正する", expanded=False):
-        sid = st.selectbox("スタッフ", list(names), format_func=names.get, key="gw_pref_staff")
-        chosen = st.selectbox("希望の日", dates, format_func=format_date_short, key="gw_pref_date")
-        pref = next((p for p in prefs if p.staff_id == sid and p.work_date == chosen), StaffDatePreferenceInput(sid, chosen))
-        prefix = f"gw_pref_{sid}_{chosen}"
-        with st.form(prefix):
-            absolute = st.checkbox("必ず休み", value=pref.absolute_off)
-            prefer = st.checkbox("できれば休み", value=pref.prefer_off)
-            extra = st.checkbox("普段は休みの曜日ですが、勤務できます", value=pref.available_extra)
-            left, right = st.columns(2)
-            begin_time = left.text_input("変更後の開始時刻（例 09:30）", value=pref.override_start_time or "")
-            end_time = right.text_input("変更後の終了時刻（例 13:00）", value=pref.override_end_time or "")
-            note = st.text_input("メモ", value=pref.note or "")
-            st.caption("時刻が空欄なら通常の勤務時間を使います。通常どおりに戻すときは、チェック・時刻・メモを空にして保存します。")
-            saved = st.form_submit_button("この日の希望を保存")
-        if saved:
-            value = StaffDatePreferenceInput(sid, chosen, absolute, prefer, extra, begin_time.strip() or None, end_time.strip() or None, note.strip() or None)
-            errors = services.save_period_preferences(conn, sid, [chosen], [value])
-            if errors:
-                show_errors(errors)
-            else:
-                _flash("希望を保存しました。他の日の希望もあれば登録してください。")
-                st.rerun()
+    st.caption("紙に書かれた「普段と違う日」だけを登録します。登録しない日は、スタッフ設定の通常の曜日・時刻のままです。")
+    render_preference_entry(
+        conn,
+        dates,
+        repo.list_staff_details(conn, include_inactive=False),
+        key="gw_pref",
+        on_saved=_flash,
+        empty_message="特別な希望は登録されていません。変更がなければ、下の必要人数を確認して進めます。",
+    )
 
     st.markdown("**最低何人必要ですか？**")
     st.caption("必要に応じてこの人数より多く配置します。予約室数から人数を自動計算することはありません。")
