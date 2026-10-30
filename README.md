@@ -88,6 +88,7 @@ src/              業務ロジック
   guided_ui.py               かんたん作成の4段階画面
   guided_workflow.py         保存・再開・更新前の状態確認
   schedule_print.py          ブラウザ印刷用 HTML
+  db_backup.py               Streamlit Cloud 用: データを非公開リポジトリへ自動で控える
 start.cmd         Windows用のダブルクリック起動
 start_app.py      ローカル起動の事前確認
 tests/            pytest
@@ -123,6 +124,37 @@ streamlit run app.py
 データベースは既定で `data/app.db` に作られます。別の場所を使う場合は
 環境変数 `CLEANING_STAFF_VALIDATOR_DB_PATH` にファイルパスを設定してください。
 
+### Streamlit Community Cloud で使う場合（データの自動控え）
+
+Streamlit Community Cloud は、再起動・スリープ・アプリの更新（マージ）のたびにサーバー内のファイルを消します。
+そのままでは `data/app.db`（スタッフ登録など）も消えるため、GitHub の**非公開**リポジトリへ自動で控えます。
+
+- 起動直後、サーバーにデータベースが無ければ、控えから戻します。
+- 保存などで内容が変わるたびに、控えを更新します（1回の更新が控え用リポジトリの1コミットになり、過去の状態に戻すこともできます）。
+- 控えを読めないときは、保存先のデータを空のデータで上書きしないよう、控えを止めて画面に知らせます。
+- 設定が無いとき（PC の `start.cmd` など）は何もしません。
+
+設定手順（管理者が一度だけ行う）:
+
+1. GitHub で**非公開（Private）**の空のリポジトリを作る（例 `cleaning-staff-data`）。
+   スタッフ名などの個人情報が入るため、必ず Private にします。アプリ本体のリポジトリとは別にします。
+2. GitHub の Settings → Developer settings → Personal access tokens → **Fine-grained tokens** でトークンを作る。
+   - Repository access: **Only select repositories** で 1. のリポジトリだけを選ぶ
+   - Permissions: **Contents** を **Read and write**（ほかは不要）
+   - 有効期限が切れると控えられなくなるため、期限を控えておき、切れる前に作り直す
+3. Streamlit Community Cloud のアプリの **Settings → Secrets** に次を貼り付けて保存する（トークンは GitHub 以外に貼らない）。
+
+```toml
+[data_backup]
+repo = "highwing-republic/cleaning-staff-data"
+token = "github_pat_..."
+# branch = "main"   # 省略時は既定ブランチ
+# path = "app.db"   # 省略時は app.db
+```
+
+設定が効いていると、左メニューの下に「入力した内容は自動で保存先に控えています」と表示されます。
+控えの読み書きに失敗した理由は、Streamlit Cloud の「Manage app」のログに `data backup:` で始まる行として出ます（トークンは出力しません）。
+
 ## テスト
 
 ```bash
@@ -133,13 +165,15 @@ pytest -q
 
 - 当日変更は印刷した勤務表へ手書きで対応し、アプリ上の勤務表は前日までの計画表として扱います。
   当日の実績をアプリへ戻す機能はありません。
-- 本番利用前・大きな変更前には `data/app.db` をバックアップしてください（自動バックアップはありません）。
+- 本番利用前・大きな変更前には `data/app.db` をバックアップしてください
+  （PC版に自動バックアップはありません。Streamlit Cloud では上記の自動控えを設定できます）。
 - 予約室数から必要人数は自動計算しません。必要人数は若女将が判断して入力します。
 - 1人で使う前提です（複数人の同時編集・ログイン認証はありません）。
 - かんたん作成では、生成後に入力や勤務表が変わった場合、古い案の保存を拒否します。
   詳細操作を含めた複数人運用を保証するものではありません。
 - 保存先はローカルのSQLiteです。再開できるのは、このデータが保持されている場合です。
-  ローカルファイルが失われるクラウド環境での永続保存は保証されません。
+  Streamlit Cloud では上記の自動控えを設定してください（1つのアプリから使う前提で、
+  同じ控えを複数のアプリから同時に使うことは想定していません）。
 - 納品用のWeb公開・ID/パスワード認証は今回の変更に含みません。
   顧客所有の公開環境、永続DB、バックアップ、認証を別途整備する必要があります。
 
