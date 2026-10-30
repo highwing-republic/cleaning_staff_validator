@@ -120,7 +120,11 @@ def generate_shift(request: GenerationRequest) -> ScheduleGenerationResult:
         automatic_average_ids,
     )
 
-    total_budget = request.time_limit_seconds or SOLVE_TIME_LIMIT_SECONDS
+    total_budget = (
+        SOLVE_TIME_LIMIT_SECONDS
+        if request.time_limit_seconds is None
+        else request.time_limit_seconds
+    )
     started = time.monotonic()
     values, solver_status = _solve_lexicographic(model, x, objectives, started, total_budget)
     solve_seconds = time.monotonic() - started

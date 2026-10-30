@@ -14,6 +14,7 @@ from src.validation import (
     PREFERENCE_DATE_OUT_OF_PERIOD,
     PREFERENCE_DUPLICATED_DATE,
     PREFERENCE_OVERRIDE_TIME_INVALID,
+    PREFERENCE_STAFF_MISMATCH,
     PREFERENCE_STAFF_NOT_FOUND,
 )
 
@@ -420,3 +421,23 @@ def test_service_conditions_by_staff_excludes_inactive(conn, staff_id):
 
 def test_service_conditions_by_staff_with_empty_period(conn, staff_id):
     assert services.get_period_conditions_by_staff(conn, []) == {}
+
+
+def test_service_rejects_another_staffs_preference_without_crashing(conn, staff_id):
+    """別スタッフの希望が混ざっていたら、例外で落ちずに検証エラーとして返す."""
+    other = repo.create_staff(
+        conn, "0002", "Bさん", CLEANER, 3, "清掃",
+        standard_start_time="09:00", standard_end_time="15:30",
+        weekdays=[0, 1, 2, 3, 4, 5, 6],
+    )
+    errors = services.save_period_preferences(
+        conn, staff_id, DATES,
+        [
+            pref(staff_id, "2026-10-22", prefer_off=True),
+            pref(other, "2026-10-23", absolute_off=True),
+        ],
+    )
+    assert [e.code for e in errors] == [PREFERENCE_STAFF_MISMATCH]
+    assert errors[0].work_date == "2026-10-23"
+    assert repo.list_staff_preferences(conn, staff_id, FIRST, LAST) == []
+    assert repo.list_staff_preferences(conn, other, FIRST, LAST) == []

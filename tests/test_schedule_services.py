@@ -985,3 +985,140 @@ def test_regeneration_preview_is_fast_enough_for_real_data(conn):
     preview = services.preview_regenerated_schedule(conn, DATES)
     assert preview.result.has_solution
     assert preview.result.solve_seconds < 10
+
+
+# ---------------------------------------------------------------------------
+# 反映は変わるセルだけを書く（PR #1 の指摘の持ち越し）
+# ---------------------------------------------------------------------------
+
+
+def _manual_working_cell(conn):
+    """固定なしの手修正（出勤）セルを1つ作り、(staff_id, work_date) を返す."""
+    staff_id = add_staff(conn, "0001", "Aさん")
+    add_staff(conn, "0002", "Bさん")
+    set_requirements(conn, SHORT, required_total_staff=2)
+    save_schedule(conn, SHORT)
+    # 出勤 → 休み → 出勤 と手で直して、固定はしない
+    assert services.save_manual_schedule_changes(conn, staff_id, {SHORT[0]: (False, False)}) == []
+    assert services.save_manual_schedule_changes(conn, staff_id, {SHORT[0]: (True, False)}) == []
+    cell = assignment(conn, SHORT[0], staff_id)
+    assert (cell.source, cell.locked) == (SCHEDULE_SOURCE_MANUAL, False)
+    return staff_id, SHORT[0]
+
+
+def _change_standard_time(conn, staff_id, start, end):
+    repo.update_staff(
+        conn, staff_id,
+        employee_code=f"{staff_id:04d}", staff_name="Aさん", role_id=CLEANER, skill_level=3,
+        department="清掃", standard_start_time=start, standard_end_time=end,
+        weekdays=EVERY_WEEKDAY,
+    )
+
+
+def test_apply_does_not_rewrite_unchanged_cells(conn):
+    """出勤/休みも時刻も変わらないセルは、手修正の印と時刻をそのまま残す."""
+    staff_id, work_date = _manual_working_cell(conn)
+    before = assignment(conn, work_date, staff_id)
+
+    preview = services.preview_regenerated_schedule(conn, SHORT)
+    assert preview.change_count == 0
+    services.apply_regenerated_schedule(conn, SHORT, preview)
+
+    after = assignment(conn, work_date, staff_id)
+    assert after.source == SCHEDULE_SOURCE_MANUAL
+    assert (after.start_time, after.end_time) == (before.start_time, before.end_time)
+    assert after.source_run_id == before.source_run_id
+
+
+def test_time_only_change_is_shown_in_the_preview(conn):
+    """通常勤務時間を変えた場合、時刻だけの変更もプレビューに出る（「変更0件」で書き換えない）."""
+    staff_id, work_date = _manual_working_cell(conn)
+    _change_standard_time(conn, staff_id, "10:00", "14:00")
+
+    preview = services.preview_regenerated_schedule(conn, SHORT)
+    changes = [c for c in preview.changes if (c.staff_id, c.work_date) == (staff_id, work_date)]
+    assert len(changes) == 1
+    assert format_schedule_change(changes[0]) == "09:00-15:30 → 10:00-14:00"
+
+
+def test_time_only_change_is_applied(conn):
+    staff_id, work_date = _manual_working_cell(conn)
+    _change_standard_time(conn, staff_id, "10:00", "14:00")
+
+    preview = services.preview_regenerated_schedule(conn, SHORT)
+    services.apply_regenerated_schedule(conn, SHORT, preview)
+
+    after = assignment(conn, work_date, staff_id)
+    assert (after.start_time, after.end_time) == ("10:00", "14:00")
+    assert after.source == SCHEDULE_SOURCE_GENERATED
+
+
+def test_early_leave_added_after_saving_is_applied_by_regeneration(conn):
+    """勤務時間を変えたいときは勤務希望を直して再生成する、という運用が使えること."""
+    staff_id = add_staff(conn, "0001", "Aさん")
+    set_requirements(conn, SHORT, required_total_staff=1)
+    save_schedule(conn, SHORT)
+    repo.save_staff_period_preferences(
+        conn, staff_id, SHORT,
+        [StaffDatePreferenceInput(staff_id, SHORT[1], override_end_time="13:00")],
+    )
+
+    preview = services.preview_regenerated_schedule(conn, SHORT)
+    assert [format_schedule_change(c) for c in preview.changes] == ["09:00-15:30 → 09:00-13:00"]
+    services.apply_regenerated_schedule(conn, SHORT, preview)
+    assert assignment(conn, SHORT[1], staff_id).end_time == "13:00"
+
+
+def test_preview_count_matches_the_cells_written_by_apply(conn):
+    """プレビューの「変更されるセル」と、反映で実際に書き換えたセルの数が一致する."""
+    ids = [add_staff(conn, f"000{i}", f"S{i}") for i in range(1, 4)]
+    set_requirements(conn, SHORT, required_total_staff=1)
+    save_schedule(conn, SHORT)
+    services.save_manual_schedule_changes(conn, ids[0], {SHORT[0]: (True, False)})
+    _change_standard_time(conn, ids[0], "10:00", "14:00")
+    set_requirements(conn, SHORT, required_total_staff=2)
+
+    preview = services.preview_regenerated_schedule(conn, SHORT)
+    run_id, errors = services.apply_regenerated_schedule(conn, SHORT, preview)
+    assert errors == []
+
+    written = [
+        a for a in repo.list_schedule_assignments(conn, SHORT[0], SHORT[-1])
+        if a.source_run_id == run_id
+    ]
+    assert preview.change_count > 0
+    assert len(written) == preview.change_count
+
+
+@pytest.mark.parametrize(
+    ("change", "expected"),
+    [
+        (
+            ScheduleChange(
+                work_date=SHORT[0], staff_id=1, staff_name="Aさん",
+                before_is_working=True, after_is_working=True,
+                before_start_time="09:00", before_end_time="15:30",
+                after_start_time="10:00", after_end_time="14:00",
+            ),
+            "09:00-15:30 → 10:00-14:00",
+        ),
+        (
+            ScheduleChange(
+                work_date=SHORT[0], staff_id=1, staff_name="Aさん",
+                before_is_working=True, after_is_working=False,
+                before_start_time="09:00", before_end_time="15:30",
+            ),
+            "09:00-15:30 → 休",
+        ),
+        (
+            # 変更前の時刻を持たない古い呼び出し方でも従来どおり表示する
+            ScheduleChange(
+                work_date=SHORT[0], staff_id=1, staff_name="Aさん",
+                before_is_working=True, after_is_working=False,
+            ),
+            "出勤 → 休",
+        ),
+    ],
+)
+def test_format_schedule_change_shows_times(change, expected):
+    assert format_schedule_change(change) == expected

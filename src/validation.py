@@ -62,6 +62,8 @@ PREFERENCE_ABSOLUTE_OFF_CONFLICT = "PREFERENCE_ABSOLUTE_OFF_CONFLICT"
 PREFERENCE_EFFECTIVE_TIME_ORDER_INVALID = "PREFERENCE_EFFECTIVE_TIME_ORDER_INVALID"
 PREFERENCE_DUPLICATED_DATE = "PREFERENCE_DUPLICATED_DATE"
 PREFERENCE_DATE_OUT_OF_PERIOD = "PREFERENCE_DATE_OUT_OF_PERIOD"
+# 保存対象のスタッフと違うスタッフの希望が混ざっている（そのまま保存すると例外になる）
+PREFERENCE_STAFF_MISMATCH = "PREFERENCE_STAFF_MISMATCH"
 # 警告扱い（保存は妨げない）: 通常勤務時間が未設定で実効時間を確定できない
 PREFERENCE_STANDARD_TIME_UNSET = "PREFERENCE_STANDARD_TIME_UNSET"
 
@@ -643,6 +645,17 @@ def validate_staff_period_preferences(
     seen: set[str] = set()
 
     for pref in preferences:
+        if pref.staff_id != staff_id:
+            errors.append(
+                ValidationError(
+                    code=PREFERENCE_STAFF_MISMATCH,
+                    message="別のスタッフの希望が混ざっています。画面を開き直してから入力してください。",
+                    staff_id=staff_id,
+                    work_date=pref.work_date,
+                    field_name="staff_id",
+                )
+            )
+
         if pref.work_date in seen:
             errors.append(
                 ValidationError(

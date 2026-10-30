@@ -779,3 +779,16 @@ def test_no_fixed_assignments_matches_plain_generation():
         d.scheduled_staff_count for d in empty.days
     ]
     assert plain.total_shortage == empty.total_shortage
+
+
+@pytest.mark.parametrize("limit", [0, 0.0, -1])
+def test_non_positive_time_limit_is_rejected(limit):
+    """0 以下の時間上限を黙って既定の10秒へ読み替えない."""
+    with pytest.raises(ValueError):
+        GenerationRequest(work_dates=DATES, staff=[make_staff(1)], days=required(1),
+                          time_limit_seconds=limit)
+
+
+def test_time_limit_none_uses_the_default():
+    result = run([make_staff(1)], required(1), time_limit_seconds=None)
+    assert result.has_solution
