@@ -9,6 +9,7 @@ import pandas as pd
 import streamlit as st
 
 from src import services
+from src.guided_ui import render_print
 from src.constants import (
     VALIDATION_STATUS_ERROR,
     VALIDATION_STATUS_INFO,
@@ -101,8 +102,11 @@ if validation.problem_days:
     )
 
 # ---------------------------------------------------------------------------
-# Excel出力
+# ブラウザ印刷（Excelを開かずに印刷できる）
 # ---------------------------------------------------------------------------
+
+if validation.existing_days:
+    render_print(services.build_schedule_export(conn, dates))
 
 st.subheader("Excel出力")
 st.caption(
