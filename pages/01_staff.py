@@ -285,38 +285,41 @@ edit_target = st.selectbox(
 )
 detail = repo.get_staff_detail(conn, edit_target)
 target = detail.staff
+# 入力欄の key はスタッフごとに分ける。共通の key だと、別のスタッフを選び直しても
+# 前に選んだ人の値が入力欄に残り、そのまま「更新」すると選んだ人に前の人の内容を書いてしまう
+edit_key = f"edit_{edit_target}"
 
 with st.form("edit_staff_form"):
     edit_employee_code = st.text_input(
-        "従業員番号", value=target.employee_code, key="edit_employee_code"
+        "従業員番号", value=target.employee_code, key=f"{edit_key}_employee_code"
     )
-    edit_name = st.text_input("氏名", value=target.staff_name, key="edit_name")
+    edit_name = st.text_input("氏名", value=target.staff_name, key=f"{edit_key}_name")
     edit_department = st.text_input(
-        "部門", value=target.department or "", key="edit_department"
+        "部門", value=target.department or "", key=f"{edit_key}_department"
     )
     edit_role_id = st.selectbox(
         "ロール",
         options=role_ids,
         index=role_ids.index(target.role_id),
         format_func=lambda rid: role_name_by_id.get(rid, str(rid)),
-        key="edit_role_id",
+        key=f"{edit_key}_role_id",
     )
     edit_skill_level = st.selectbox(
         "総合スキル",
         options=skill_options,
         index=target.skill_level - SKILL_LEVEL_MIN,
         format_func=format_skill_level,
-        key="edit_skill_level",
+        key=f"{edit_key}_skill_level",
     )
     edit_special_skill_ids = _special_skill_multiselect(
-        "edit_special_skills", detail.special_skill_ids
+        f"{edit_key}_special_skills", detail.special_skill_ids
     )
-    edit_weekdays = _weekday_checkboxes("edit", detail.weekdays)
+    edit_weekdays = _weekday_checkboxes(edit_key, detail.weekdays)
     edit_start, edit_end = _standard_time_inputs(
-        f"edit_{edit_target}", target.standard_start_time, target.standard_end_time
+        edit_key, target.standard_start_time, target.standard_end_time
     )
     edit_target_days, edit_max_days, edit_max_consecutive = _work_volume_inputs(
-        f"edit_{edit_target}",
+        edit_key,
         target.target_days_per_week,
         target.max_days_per_period,
         target.max_consecutive_days,
@@ -370,7 +373,10 @@ with st.form("edit_staff_form"):
 
 st.markdown("**無効化**")
 if target.active:
-    confirm = st.checkbox("このスタッフを無効化することを確認しました", key="deactivate_confirm")
+    confirm = st.checkbox(
+        f"「{target.staff_name}」を無効化することを確認しました",
+        key=f"deactivate_confirm_{edit_target}",
+    )
     if st.button("無効化する", disabled=not confirm):
         repo.deactivate_staff(conn, edit_target)
         st.success("無効化しました。")
