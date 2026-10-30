@@ -56,6 +56,10 @@ RESTORE_FAILED_MESSAGE = (
     "保存先のデータは無事ですが、読み込めるまで画面を止めています。"
     "少し待ってから「もう一度読み込む」を押してください。続くときは管理者に連絡してください。"
 )
+RELOADED_NOTICE = (
+    "保存先（GitHub）のデータの方が新しかったため、保存先のデータを読み込み直しました。"
+    "直前に入力した内容が反映されていない場合は、もう一度入力してください。"
+)
 BACKUP_FAILED_MESSAGE = (
     "直前の変更を保存先（GitHub）へ控えられませんでした。"
     "この画面では保存されていますが、アプリが再起動すると消えるおそれがあります。"
@@ -213,8 +217,9 @@ class _State:
     local_existed_at_start: bool | None = None
     next_retry_at: datetime | None = None
     logged_no_config: bool = False
-    # 控えにスタッフが登録されているか（空のデータベースで上書きしないための目印）
-    remote_has_staff: bool = False
+    # 控えに登録されているスタッフの人数（少ない人数のデータベースで上書きしないための目印）
+    remote_staff_count: int = 0
+    notice: str | None = None
     remote_sha: str | None = None
     last_hash: str | None = None
     last_saved_at: datetime | None = None
@@ -282,16 +287,32 @@ def content_digest(path: Path) -> str:
     return digest.hexdigest()
 
 
-def has_staff(path: Path) -> bool:
-    """スタッフが1人でも登録されているか. スタッフは削除せず無効化するだけなので、
-    0人のデータベースは「作られたばかりの空のもの」とみなせる."""
+def staff_count(path: Path) -> int:
+    """登録されているスタッフの人数（無効も含む）.
+
+    スタッフは削除せず無効化するだけなので、この人数は正しく使っている限り減らない。
+    控えより人数が少ないデータベースは、空のものか古いものとみなせる。
+    """
     connection = sqlite3.connect(f"{Path(path).resolve().as_uri()}?mode=ro", uri=True)
     try:
-        return connection.execute("SELECT EXISTS (SELECT 1 FROM staff)").fetchone()[0] == 1
+        return int(connection.execute("SELECT COUNT(*) FROM staff").fetchone()[0])
     except sqlite3.Error:
-        return False  # 表がまだ無い
+        return 0  # 表がまだ無い
     finally:
         connection.close()
+
+
+def has_staff(path: Path) -> bool:
+    return staff_count(path) > 0
+
+
+def _switch_to_reload(reason: str) -> None:
+    """控えを正とし、次の ensure_restored で手元を控えの内容に置き換える（控えは上書きしない）."""
+    _log(reason)
+    _STATE.enabled = False
+    _STATE.local_existed_at_start = False
+    _STATE.next_retry_at = None
+    _STATE.notice = RELOADED_NOTICE
 
 
 def _describe(exc: Exception) -> str:
@@ -348,7 +369,7 @@ def ensure_restored(config: BackupConfig | None = None) -> None:
         try:
             data, sha = _download_with_retries(client)
             if data is None:
-                _STATE.remote_has_staff = False
+                _STATE.remote_staff_count = 0
                 _log(f"no backup file yet in {config.repo}; it will be created on the first change")
             else:
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -356,21 +377,27 @@ def ensure_restored(config: BackupConfig | None = None) -> None:
                 partial.write_bytes(data)
                 try:
                     digest = content_digest(partial)  # 壊れた控えで手元を置き換えない
-                    _STATE.remote_has_staff = has_staff(partial)
+                    _STATE.remote_staff_count = staff_count(partial)
                 except Exception:
                     partial.unlink(missing_ok=True)
                     raise
-                # 手元のデータベースを残すのは、起動時からあり、スタッフが登録されているときだけ。
-                # 控えを読めない間に作られた空のデータベースが残っていても、控えで置き換える
+                # 手元のデータベースを残すのは、起動時からあり、控えと同じかそれ以上の人数がいるときだけ。
+                # 控えを読めない間に作られた空のデータベースや古いものが残っていても、控えで置き換える
+                local_count = staff_count(path) if path.exists() else 0
                 keep_local = (
-                    _STATE.local_existed_at_start and path.exists() and has_staff(path)
+                    bool(_STATE.local_existed_at_start)
+                    and local_count > 0
+                    and local_count >= _STATE.remote_staff_count
                 )
                 if keep_local:
                     partial.unlink(missing_ok=True)
                     _log("kept the database that was already on this server")
                 else:
                     if path.exists():
-                        _log("the database on this server has no staff; using the backup instead")
+                        _log(
+                        f"the database on this server has {local_count} staff "
+                        f"(backup has {_STATE.remote_staff_count}); using the backup instead"
+                    )
                     partial.replace(path)
                     _STATE.last_hash = digest
                     _log(f"restored {len(data)} bytes from {config.repo}")
@@ -412,12 +439,14 @@ def backup_if_changed(config: BackupConfig | None = None) -> bool:
                 digest = content_digest(copy_path)
                 if digest == _STATE.last_hash:
                     return False
-                if _STATE.remote_has_staff and not has_staff(copy_path):
-                    # スタッフのいる控えを、スタッフ0人のデータベースで上書きしない（最後の安全装置）
-                    _log("refused to replace a backup that has staff with a database that has none")
-                    _STATE.error = BACKUP_FAILED_MESSAGE
+                local_count = staff_count(copy_path)
+                if local_count < _STATE.remote_staff_count:
+                    # 控えより人数の少ないデータベースで上書きしない（最後の安全装置）。手元を控えに戻す
+                    _switch_to_reload(
+                        f"refused to replace a backup that has {_STATE.remote_staff_count} staff "
+                        f"with a database that has {local_count}; reloading the backup"
+                    )
                     return False
-                local_has_staff = has_staff(copy_path)
                 data = copy_path.read_bytes()
             now = _now()
             message = f"backup: {config.path} ({now:%Y-%m-%d %H:%M} JST)"
@@ -425,8 +454,16 @@ def backup_if_changed(config: BackupConfig | None = None) -> bool:
             try:
                 sha = client.upload(data, _STATE.remote_sha, message)
             except BackupConflict:
-                # 別の画面が先に控えを更新していた: 最新の sha を取り直して1回だけやり直す
-                _, latest_sha = client.download()
+                # 控えが別の場所で更新されていた（または、無いと思っていた控えがあった）。
+                # 控えの人数が手元以上なら控えを正として読み込み直し、上書きしない
+                remote_data, latest_sha = client.download()
+                remote_count = _staff_count_of_bytes(remote_data)
+                if remote_data is not None and remote_count >= local_count:
+                    _switch_to_reload(
+                        f"backup was changed elsewhere (backup has {remote_count} staff, "
+                        f"this server has {local_count}); reloading it instead of overwriting"
+                    )
+                    return False
                 sha = client.upload(data, latest_sha, message)
         except Exception as exc:  # 画面の処理（再実行など）を止めないよう、ここで受け止めて知らせる
             _log(f"upload failed: {_describe(exc)}")
@@ -435,9 +472,19 @@ def backup_if_changed(config: BackupConfig | None = None) -> bool:
         _STATE.remote_sha = sha
         _STATE.last_hash = digest
         _STATE.last_saved_at = now
-        _STATE.remote_has_staff = local_has_staff
+        _STATE.remote_staff_count = local_count
+        _STATE.notice = None
         _STATE.error = None
         return True
+
+
+def _staff_count_of_bytes(data: bytes | None) -> int:
+    if data is None:
+        return 0
+    with tempfile.TemporaryDirectory() as tmp:
+        copy_path = Path(tmp) / "remote.db"
+        copy_path.write_bytes(data)
+        return staff_count(copy_path)
 
 
 def status() -> dict:
@@ -447,4 +494,5 @@ def status() -> dict:
         "error": _STATE.error,
         "restore_failed": _STATE.error == RESTORE_FAILED_MESSAGE,
         "last_saved_at": _STATE.last_saved_at,
+        "notice": _STATE.notice,
     }

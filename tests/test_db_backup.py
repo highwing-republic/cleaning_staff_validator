@@ -170,6 +170,7 @@ def test_without_settings_nothing_happens(remote, db_file, monkeypatch):
     assert db_backup.backup_if_changed() is False
     assert db_backup.status() == {
         "enabled": False, "error": None, "restore_failed": False, "last_saved_at": None,
+        "notice": None,
     }
     assert remote.downloads == 0
 
@@ -267,7 +268,49 @@ def test_empty_database_is_never_uploaded_over_a_backup_with_staff(remote, db_fi
 
     assert db_backup.backup_if_changed() is False
     assert remote.data == saved
-    assert db_backup.status()["error"] == BACKUP_FAILED_MESSAGE
+    assert db_backup.status()["notice"] == db_backup.RELOADED_NOTICE
+
+    db_backup.ensure_restored(CONFIG)  # 次の画面表示で控えに戻る
+    assert staff_names(db_file) == ["山田"]
+    assert remote.uploads == []
+
+
+def test_database_with_fewer_staff_never_replaces_the_backup(remote, db_file, tmp_path):
+    """スタッフは削除しないので、控えより人数が少ないデータベースは古い・壊れたものとみなし、控えを守る.
+    （空の画面で1人だけ登録し直した、のような場合も控えの14人を消さない）"""
+    remote.put(make_db(tmp_path / "saved.db", "山田", "佐藤"))
+    db_backup.ensure_restored(CONFIG)
+    db_file.unlink()
+    make_db(db_file, "新人")  # 1人だけのデータベースになってしまった
+    saved = remote.data
+
+    assert db_backup.backup_if_changed() is False
+    assert remote.data == saved
+    db_backup.ensure_restored(CONFIG)
+    assert staff_names(db_file) == ["山田", "佐藤"]
+
+
+def test_stale_database_left_on_the_server_is_replaced_by_the_backup(remote, db_file, tmp_path):
+    """上書き更新で起動し直したとき、手元の人数が控えより少なければ控えを使う."""
+    make_db(db_file, "山田")
+    remote.put(make_db(tmp_path / "saved.db", "山田", "佐藤"))
+    db_backup.ensure_restored(CONFIG)
+    assert staff_names(db_file) == ["山田", "佐藤"]
+
+
+def test_backup_that_appears_after_a_missing_file_is_not_overwritten(remote, db_file, tmp_path):
+    """控えが「まだ無い」と返ったあと、送るときに実はあった（GitHub 側の一時的な不整合など）場合も、
+    手元の空のデータベースで上書きせず、控えを読み込み直す."""
+    saved = make_db(tmp_path / "saved.db", "山田", "佐藤")
+    db_backup.ensure_restored(CONFIG)  # この時点では控えが無い（初回扱い）
+    remote.put(saved)                  # 実際には控えがあった
+    open_app_once()
+
+    assert db_backup.backup_if_changed() is False
+    assert remote.data == saved
+    assert remote.uploads == []
+    db_backup.ensure_restored(CONFIG)
+    assert staff_names(db_file) == ["山田", "佐藤"]
 
 
 def test_first_staff_can_be_backed_up_when_the_backup_is_empty(remote, db_file, tmp_path):
@@ -464,15 +507,33 @@ def test_upload_failure_is_reported_and_retried(remote, db_file, tmp_path):
     assert db_backup.status()["error"] is None
 
 
-def test_conflict_is_retried_with_the_latest_sha(remote, db_file, tmp_path):
+def test_conflict_keeps_the_backup_when_it_has_as_many_staff(remote, db_file, tmp_path):
+    """控えが別の場所で更新されていて、手元より人数が少なくなければ、上書きせず控えを読み込み直す."""
     db_backup.ensure_restored(CONFIG)
     open_app_once()
     db_backup.backup_if_changed()
     remote.put(make_db(tmp_path / "other.db", "別の画面"))
+    other = remote.data
+
+    add_staff("田中")
+    assert db_backup.backup_if_changed() is False
+    assert remote.data == other
+    assert db_backup.status()["notice"] == db_backup.RELOADED_NOTICE
+    db_backup.ensure_restored(CONFIG)
+    assert staff_names(db_file) == ["別の画面"]
+
+
+def test_conflict_overwrites_when_this_server_has_more_staff(remote, db_file, tmp_path):
+    """手元の方が人数が多い（新しく登録した）なら、最新の sha を取り直して控えを更新する."""
+    db_backup.ensure_restored(CONFIG)
+    open_app_once()
+    db_backup.backup_if_changed()
+    remote.put(make_db(tmp_path / "other.db"))  # 控えは0人のまま更新されていた
 
     add_staff("田中")
     assert db_backup.backup_if_changed() is True
     assert staff_names_from_bytes(remote.data, tmp_path) == ["田中"]
+    assert db_backup.status()["notice"] is None
 
 
 def test_backup_errors_do_not_break_the_page(remote, db_file, monkeypatch):
