@@ -27,7 +27,6 @@ from src.navigation import (
 from src.ui_common import (
     WEEKDAY_LABELS_JA,
     back_to_home_button,
-    format_optional_int,
     format_skill_level,
     format_weekdays,
     open_connection,
@@ -94,6 +93,7 @@ def _special_skill_multiselect(key: str, assigned: tuple[int, ...] = ()) -> list
         default=[i for i in assigned if i in option_ids],
         format_func=lambda sid: name_by_id.get(sid, str(sid)),
         key=key,
+        placeholder="なし（あれば選ぶ）",
     )
 
 
@@ -114,48 +114,53 @@ def _standard_time_inputs(
     return start_value, end_value
 
 
+TARGET_DAYS_LABEL = "週に働く日数の目安"
+MAX_CONSECUTIVE_LABEL = "続けて働ける日数の上限"
+NOT_SPECIFIED = "指定なし"
+
+
+def format_target_days_per_week(value: int | None) -> str:
+    return NOT_SPECIFIED if value is None else f"週{value}日"
+
+
 def _work_volume_inputs(
     key_prefix: str,
     target_days: int | None = None,
-    max_days: int | None = None,
     max_consecutive: int | None = None,
-) -> tuple[int | None, int | None, int | None]:
-    """勤務量の任意項目をプルダウンで選ぶ。「未設定」は条件なしとして保存する.
+) -> tuple[int | None, int | None]:
+    """勤務日数の希望（任意）. 「指定なし」は条件なしとして保存する.
 
-    数値の入力欄は空欄だと −／＋ が押せず「入力できない」ように見えるため、選ぶだけにしている。
+    以前あった「期間内最大勤務日数」は、14日で作るか10日で作るかで意味が変わり、
+    勤務表づくりにも使っていないため、入力欄を出さない（保存済みの値は変えない）。
     """
-    left, center, right = st.columns(3)
+    st.markdown("**勤務日数の希望**")
+    st.caption("わからなければ「指定なし」のままで大丈夫です。")
+    left, right = st.columns(2)
     with left:
         target = count_select(
-            "目標勤務日数 / 週（任意）",
+            TARGET_DAYS_LABEL,
             range(TARGET_DAYS_PER_WEEK_MIN, TARGET_DAYS_PER_WEEK_MAX + 1),
             target_days,
             key=f"{key_prefix}_target_days",
             unit="週{}日",
-            help="普段、週に何日程度勤務したいか。未設定なら目標勤務日数の条件なしとして扱います。",
-        )
-    with center:
-        max_period = count_select(
-            "期間内最大勤務日数（任意）",
-            range(1, PERIOD_MAX_DAYS + 1),
-            max_days,
-            key=f"{key_prefix}_max_days",
-            unit="{}日まで",
+            unset_label=NOT_SPECIFIED,
             help=(
-                "スタッフ個別の勤務量上限を将来設定するための欄です。"
-                "期間の長さによって意味が変わるため、現時点では判定に使いません。"
+                "勤務表をつくるとき、できるだけこの日数に近づけます。"
+                "休みの希望や必要な人数によって前後することがあります。"
+                "指定なしなら、必要な人数に合わせて自動で目安を決めます。"
             ),
         )
     with right:
         consecutive = count_select(
-            "最大連続勤務日数（任意）",
+            MAX_CONSECUTIVE_LABEL,
             range(1, PERIOD_MAX_DAYS + 1),
             max_consecutive,
             key=f"{key_prefix}_max_consecutive",
-            unit="{}日まで",
-            help="続けて勤務してよい日数の上限。未設定なら個別の上限なしとして扱います。",
+            unit="連続{}日まで",
+            unset_label=NOT_SPECIFIED,
+            help="この日数より長く続けて勤務にしません。指定なしなら上限はありません。",
         )
-    return target, max_period, consecutive
+    return target, consecutive
 
 
 # ---------------------------------------------------------------------------
@@ -183,7 +188,7 @@ if staff_details:
                 "通常勤務時間": format_standard_work_time(
                     d.staff.standard_start_time, d.staff.standard_end_time
                 ),
-                "目標勤務日数/週": format_optional_int(d.staff.target_days_per_week),
+                TARGET_DAYS_LABEL: format_target_days_per_week(d.staff.target_days_per_week),
                 "有効": "有効" if d.staff.active else "無効",
             }
             for d in staff_details
@@ -220,7 +225,8 @@ with st.form("create_staff_form", clear_on_submit=True):
     new_special_skill_ids = _special_skill_multiselect("create_special_skills")
     new_weekdays = _weekday_checkboxes("create")
     new_start, new_end = _standard_time_inputs("create", None, None)
-    new_target_days, new_max_days, new_max_consecutive = _work_volume_inputs("create")
+    new_target_days, new_max_consecutive = _work_volume_inputs("create")
+    new_max_days = None  # 入力欄なし（勤務表づくりに使っていない）
 
     submitted = st.form_submit_button("登録")
 
@@ -318,12 +324,12 @@ with st.form("edit_staff_form"):
     edit_start, edit_end = _standard_time_inputs(
         edit_key, target.standard_start_time, target.standard_end_time
     )
-    edit_target_days, edit_max_days, edit_max_consecutive = _work_volume_inputs(
+    edit_target_days, edit_max_consecutive = _work_volume_inputs(
         edit_key,
         target.target_days_per_week,
-        target.max_days_per_period,
         target.max_consecutive_days,
     )
+    edit_max_days = target.max_days_per_period  # 入力欄なし. 保存済みの値はそのまま残す
 
     edit_submitted = st.form_submit_button("更新")
 

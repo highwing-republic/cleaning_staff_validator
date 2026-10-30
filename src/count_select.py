@@ -23,9 +23,9 @@ def count_options(choices: Iterable[int], current: int | None) -> list[int | Non
     return [None, *options]
 
 
-def format_count(value: int | None, unit: str) -> str:
-    """unit は '週{}日' のような書式. None は「未設定」."""
-    return UNSET_LABEL if value is None else unit.format(value)
+def format_count(value: int | None, unit: str, unset_label: str = UNSET_LABEL) -> str:
+    """unit は '週{}日' のような書式. None は unset_label（既定は「未設定」）."""
+    return unset_label if value is None else unit.format(value)
 
 
 def count_select(
@@ -35,6 +35,7 @@ def count_select(
     key: str,
     *,
     unit: str,
+    unset_label: str = UNSET_LABEL,
     help: str | None = None,
 ) -> int | None:
     """日数をプルダウンで選ぶ. 未設定なら None を返す."""
@@ -43,7 +44,7 @@ def count_select(
         label,
         options,
         index=options.index(value),
-        format_func=lambda n: format_count(n, unit),
+        format_func=lambda n: format_count(n, unit, unset_label),
         key=key,
         help=help,
     )

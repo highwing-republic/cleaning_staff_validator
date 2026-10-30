@@ -342,12 +342,12 @@ def test_staff_page_time_dropdown_is_hourly_with_optional_half_hour(db_path):
 
 
 def test_staff_page_shows_work_volume_inputs(db_path):
-    """勤務量は数値入力欄でなくプルダウン（空欄だと −／＋ が押せず入力できないように見えるため）."""
+    """勤務日数の希望は2つのプルダウン. 期間の長さで意味が変わる「期間内最大勤務日数」は出さない."""
     at = _open_staff_page()
     labels = [s.label for s in at.selectbox]
-    assert "目標勤務日数 / 週（任意）" in labels
-    assert "期間内最大勤務日数（任意）" in labels
-    assert "最大連続勤務日数（任意）" in labels
+    assert "週に働く日数の目安" in labels
+    assert "続けて働ける日数の上限" in labels
+    assert not [s for s in at.selectbox if "期間内最大" in s.label]
     assert not [n for n in at.number_input if "勤務日数" in n.label]
 
 
@@ -355,11 +355,17 @@ def test_work_volume_dropdowns_start_unset_with_day_choices(db_path):
     at = _open_staff_page()
     target = at.selectbox(key="create_target_days")
     assert target.value is None
-    assert target.options == ["未設定"] + [f"週{n}日" for n in range(1, 8)]
+    assert target.options == ["指定なし"] + [f"週{n}日" for n in range(1, 8)]
     consecutive = at.selectbox(key="create_max_consecutive")
     assert consecutive.value is None
-    assert consecutive.options[:3] == ["未設定", "1日まで", "2日まで"]
-    assert consecutive.options[-1] == "14日まで"
+    assert consecutive.options[:3] == ["指定なし", "連続1日まで", "連続2日まで"]
+    assert consecutive.options[-1] == "連続14日まで"
+
+
+def test_special_skill_placeholder_is_japanese(db_path):
+    at = _open_staff_page()
+    skills = at.multiselect(key="create_special_skills")
+    assert skills.placeholder == "なし（あれば選ぶ）"
 
 
 def test_staff_page_offers_heavy_work_special_skill(db_path):
@@ -512,7 +518,7 @@ def test_staff_list_shows_unset_target_days_explicitly(db_path):
     at = _open_staff_page()
     table = at.dataframe[0].value
     row = table[table["従業員番号"] == "0014"].iloc[0]
-    assert row["目標勤務日数/週"] == "未設定"
+    assert row["週に働く日数の目安"] == "指定なし"
 
 
 def test_staff_page_edit_form_updates_standard_conditions(db_path):
@@ -566,16 +572,17 @@ def test_staff_page_edit_keeps_a_saved_time_outside_the_choices(db_path):
 
 
 def test_staff_page_edit_keeps_saved_day_counts_outside_the_choices(db_path):
-    """以前の入力で保存した 20日 のような値も、開いて保存しただけでは変わらない."""
+    """以前の入力で保存した 20日 のような値も、開いて保存しただけでは変わらない.
+    入力欄をなくした「期間内最大勤務日数」も、保存済みの値は消さない."""
     conn = get_connection(str(db_path))
     staff_id = repo.create_staff(
         conn, "0023", "Lさん", CLEANER, 3, "清掃",
-        max_days_per_period=20, max_consecutive_days=5, weekdays=[0, 1, 2],
+        max_days_per_period=20, max_consecutive_days=20, weekdays=[0, 1, 2],
     )
     conn.close()
 
     at = _open_staff_page()
-    assert at.selectbox(key=f"edit_{staff_id}_max_days").value == 20
+    assert at.selectbox(key=f"edit_{staff_id}_max_consecutive").value == 20
     [b for b in at.button if b.label == "更新"][0].click()
     at.run()
     assert not at.exception
@@ -583,7 +590,7 @@ def test_staff_page_edit_keeps_saved_day_counts_outside_the_choices(db_path):
     conn = get_connection(str(db_path))
     saved = repo.get_staff(conn, staff_id)
     conn.close()
-    assert (saved.max_days_per_period, saved.max_consecutive_days) == (20, 5)
+    assert (saved.max_days_per_period, saved.max_consecutive_days) == (20, 20)
 
 
 def test_staff_page_edit_form_prefills_existing_conditions(db_path):
