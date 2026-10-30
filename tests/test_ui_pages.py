@@ -2748,10 +2748,34 @@ def test_staff_page_empty_state_tells_what_to_do(db_path):
 
 
 def test_staff_page_guides_to_the_next_step(db_path):
-    """§14: 次に進む画面を示す."""
+    """§14: 次に進む画面を示す（ふだんの入口のかんたん作成へ戻す）."""
     _seed(db_path)
     at = _open_staff_page()
-    assert "勤務希望" in _captions(at)
+    captions = _captions(at)
+    assert "ホーム・かんたん作成" in captions
+    # 詳細操作の勤務希望画面へは案内しない（かんたん作成の利用者が迷わないように）
+    assert "「勤務希望」で" not in captions
+
+
+def test_staff_page_opened_alone_has_no_back_button(db_path):
+    """app.py を通らずに開いた場合は戻り先が分からないので、ボタンを出さない."""
+    _seed(db_path)
+    at = _open_staff_page()
+    assert all(b.label != "ホーム・かんたん作成へ戻る" for b in at.button)
+
+
+def test_staff_page_back_button_returns_to_the_guided_home(db_path):
+    """スタッフ管理から「ホーム・かんたん作成へ戻る」でホームに戻れる."""
+    _seed(db_path)
+    at = AppTest.from_file(_page("app.py"), default_timeout=60)
+    at.run()
+    at.switch_page("pages/01_staff.py").run()
+    assert not at.exception
+    back = [b for b in at.button if b.label == "ホーム・かんたん作成へ戻る"]
+    assert back
+    back[0].click().run()
+    assert not at.exception
+    assert any(b.label == "勤務表をつくる" for b in at.button)
 
 
 def test_preference_page_says_when_there_are_no_preferences(db_path):

@@ -171,3 +171,18 @@ def show_errors(errors: list[ValidationError]) -> None:
         text = f"[{prefix}] {err.message}" if prefix else err.message
         st.error(text)
 
+
+
+def back_to_home_button(label: str | None = None, key: str = "back_to_home") -> None:
+    """「ホーム・かんたん作成へ戻る」ボタン.
+
+    ホームは app.py の関数ページなので、app.py が保存したページを使って移動する。
+    画面を単体で開いた場合（app.py を通らない場合）はボタンを出さない。
+    """
+    from src.navigation import HOME_PAGE_STATE_KEY, PAGE_HOME
+
+    home_page = st.session_state.get(HOME_PAGE_STATE_KEY)
+    if home_page is None:
+        return
+    if st.button(label or f"{PAGE_HOME}へ戻る", key=key, type="primary"):
+        st.switch_page(home_page)

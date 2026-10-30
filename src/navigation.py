@@ -11,6 +11,8 @@ APP_SUBTITLE = (
 )
 
 # 画面名（案内文ではこの名前を「」で囲んで使う）
+# ふだん使う画面（ホームの「勤務表をつくる」から4段階で進む）
+PAGE_HOME = "ホーム・かんたん作成"
 PAGE_STAFF = "スタッフ管理"
 PAGE_PREFERENCES = "勤務希望"
 PAGE_REQUIREMENTS = "予約・必要人数"
@@ -62,3 +64,6 @@ USAGE_STEPS: list[str] = [
     f"5. 「{PAGE_SCHEDULE}」で手直しして、日ごとに確定する",
     f"6. 「{PAGE_OUTPUT}」でExcelを出力して印刷する",
 ]
+
+# ホーム画面（関数で作るページ）を他の画面から開くため、app.py が毎回ここへ置く
+HOME_PAGE_STATE_KEY = "_home_page"

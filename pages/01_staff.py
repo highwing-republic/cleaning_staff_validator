@@ -21,11 +21,12 @@ from src.constants import (
 )
 from src.navigation import (
     HEADING_STAFF,
-    PAGE_PREFERENCES,
+    PAGE_HOME,
     PAGE_STAFF,
 )
 from src.ui_common import (
     WEEKDAY_LABELS_JA,
+    back_to_home_button,
     format_optional_int,
     format_skill_level,
     format_weekdays,
@@ -382,6 +383,7 @@ else:
 
 st.divider()
 st.caption(
-    f"スタッフの登録・確認が終わったら、「{PAGE_PREFERENCES}」で"
-    "紙に書かれた「普段と違う希望」を転記してください。"
+    f"スタッフの登録・確認が終わったら、「{PAGE_HOME}」に戻って勤務表づくりを続けてください。"
+    "休みの希望や必要人数の入力も、そこから順番に案内します。"
 )
+back_to_home_button()
