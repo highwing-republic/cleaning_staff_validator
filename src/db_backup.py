@@ -26,11 +26,13 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
-import logging
 import os
 import sqlite3
+import ssl
+import sys
 import tempfile
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -38,20 +40,21 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-LOGGER = logging.getLogger(__name__)
-
 SECRETS_SECTION = "data_backup"
 DEFAULT_REMOTE_PATH = "app.db"
 API_ROOT = "https://api.github.com"
 REQUEST_TIMEOUT_SECONDS = 20
 JST = timezone(timedelta(hours=9))
-# 控えを読めなかったとき、次に読み直すまでの秒数
-RESTORE_RETRY_SECONDS = 30
+# 控えを読めなかったとき、次に読み直すまでの秒数（「もう一度読み込む」ボタンなら待たずに読み直す）
+RESTORE_RETRY_SECONDS = 10
+# 起動直後は通信が不安定なことがあるため、1回の画面表示の中で何回か読み直す
+RESTORE_ATTEMPTS = 3
+RESTORE_BACKOFF_SECONDS = (1.0, 2.0)
 
 RESTORE_FAILED_MESSAGE = (
     "保存先（GitHub）からデータを読み込めませんでした。"
-    "保存先のデータを守るため、いまは自動の控えを止めています（この間に入力した内容は消えるおそれがあります）。"
-    "少し待ってからページを読み込み直してください。続くときは管理者に連絡してください。"
+    "保存先のデータは無事ですが、読み込めるまで画面を止めています。"
+    "少し待ってから「もう一度読み込む」を押してください。続くときは管理者に連絡してください。"
 )
 BACKUP_FAILED_MESSAGE = (
     "直前の変更を保存先（GitHub）へ控えられませんでした。"
@@ -100,6 +103,33 @@ def load_config() -> BackupConfig | None:
     return config_from_mapping(section)
 
 
+def _log(message: str) -> None:
+    """Streamlit Cloud の「Manage app」のログに出す（トークンは渡さないこと）."""
+    print(f"data backup: {message}", file=sys.stderr, flush=True)
+
+
+_SSL_CONTEXT: ssl.SSLContext | None = None
+
+
+def _ssl_context() -> ssl.SSLContext:
+    """OS の証明書に certifi の証明書を足した SSL 設定.
+
+    Streamlit Cloud は作り直しのたびに Python の環境が変わることがあり、
+    その Python が OS の証明書を見つけられないと GitHub に接続できない。certifi があれば足しておく。
+    """
+    global _SSL_CONTEXT
+    if _SSL_CONTEXT is None:
+        context = ssl.create_default_context()
+        try:
+            import certifi
+
+            context.load_verify_locations(cafile=certifi.where())
+        except Exception:  # certifi が無い環境では OS の証明書だけを使う
+            pass
+        _SSL_CONTEXT = context
+    return _SSL_CONTEXT
+
+
 class GitHubContentsClient:
     """GitHub の Contents API で1ファイルを読み書きする（標準ライブラリだけで実装）."""
 
@@ -125,13 +155,17 @@ class GitHubContentsClient:
         if data is not None:
             request.add_header("Content-Type", "application/json")
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+            with urllib.request.urlopen(
+                request, timeout=self.timeout, context=_ssl_context()
+            ) as response:
                 return response.status, response.read()
         except urllib.error.HTTPError as exc:
             return exc.code, exc.read() or b""
         except (urllib.error.URLError, OSError, TimeoutError) as exc:
-            # トークンが漏れないよう、例外の詳細は種類だけにとどめる
-            raise BackupError(f"network error: {type(exc).__name__}") from None
+            # 原因（証明書・名前解決など）が分かるよう理由も残す. 念のためトークンは伏せる
+            reason = getattr(exc, "reason", exc)
+            detail = f"{type(exc).__name__}: {reason}".replace(self.config.token, "***")
+            raise BackupError(f"network error: {detail[:300]}") from None
 
     def download(self) -> tuple[bytes | None, str | None]:
         """(ファイルの中身, sha). 控えがまだ無ければ (None, None)."""
@@ -178,6 +212,7 @@ class _State:
     # プロセスの起動時（最初の画面表示）に手元にデータベースがあったか. None はまだ調べていない
     local_existed_at_start: bool | None = None
     next_retry_at: datetime | None = None
+    logged_no_config: bool = False
     remote_sha: str | None = None
     last_hash: str | None = None
     last_saved_at: datetime | None = None
@@ -254,14 +289,27 @@ def _now() -> datetime:
     return datetime.now(JST)
 
 
+def _download_with_retries(client) -> tuple[bytes | None, str | None]:
+    """控えを読む. 起動直後の不安定な通信に備え、少し待って何回か読み直す."""
+    for attempt in range(1, RESTORE_ATTEMPTS + 1):
+        try:
+            return client.download()
+        except Exception as exc:
+            _log(f"restore failed (attempt {attempt}/{RESTORE_ATTEMPTS}): {_describe(exc)}")
+            if attempt == RESTORE_ATTEMPTS:
+                raise
+            time.sleep(RESTORE_BACKOFF_SECONDS[min(attempt, len(RESTORE_BACKOFF_SECONDS)) - 1])
+    raise AssertionError("unreachable")
+
+
 def ensure_restored(config: BackupConfig | None = None) -> None:
     """画面を描く前に毎回呼ぶ. 起動時に手元にデータベースが無かったら控えから戻す.
 
     - 控えを読めたら、以後は内容が変わるたびに控えを送る（backup_if_changed）
     - 起動時に手元にあったデータベースは控えで上書きしない
-    - 控えを読めなかったときは控えの送信を止め、30秒おきに読み直しを試みる
-      （起動時に手元に無かった場合は、読めた時点で控えの内容に入れ替える。
-      止めている間は入力しないよう画面で知らせる）
+    - 控えを読めなかったときは控えの送信を止める（status()["restore_failed"]）。
+      画面はデータを開かずに止め、10秒後の画面表示か retry_now() で読み直す
+      （起動時に手元に無かった場合は、読めた時点で控えの内容に入れ替える）
     - 設定が無ければ何もしない. Secrets をあとから設定した場合は、次の画面表示から始める
       （その場合も、起動後に作られたデータベースは起動時に無かったものとして控えを優先する）
     データベースを開く前（どの画面よりも先）に呼ぶこと。
@@ -277,12 +325,19 @@ def ensure_restored(config: BackupConfig | None = None) -> None:
             return
         config = config or load_config()
         if config is None:
-            return  # 設定が無い（PC版など）
+            if not _STATE.logged_no_config:
+                _log("settings [data_backup] not found; backup is off")
+                _STATE.logged_no_config = True
+            return
 
         client = client_factory(config)
         try:
-            data, sha = client.download()
-            if data is not None and not _STATE.local_existed_at_start:
+            data, sha = _download_with_retries(client)
+            if data is None:
+                _log(f"no backup file yet in {config.repo}; it will be created on the first change")
+            elif _STATE.local_existed_at_start:
+                _log("kept the database that was already on this server")
+            else:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 partial = path.with_suffix(path.suffix + ".restoring")
                 partial.write_bytes(data)
@@ -293,8 +348,9 @@ def ensure_restored(config: BackupConfig | None = None) -> None:
                     raise
                 partial.replace(path)
                 _STATE.last_hash = digest
+                _log(f"restored {len(data)} bytes from {config.repo}")
         except Exception as exc:  # 読めなければ控えを送らない（空のデータで上書きしないため）
-            LOGGER.warning("data backup: restore failed: %s", _describe(exc))
+            _log(f"restore failed: {_describe(exc)}")
             _STATE.error = RESTORE_FAILED_MESSAGE
             _STATE.next_retry_at = now + timedelta(seconds=RESTORE_RETRY_SECONDS)
             return
@@ -303,6 +359,13 @@ def ensure_restored(config: BackupConfig | None = None) -> None:
         _STATE.enabled = True
         _STATE.next_retry_at = None
         _STATE.error = None
+
+
+def retry_now() -> None:
+    """「もう一度読み込む」ボタン用: 待ち時間を待たずに、次の ensure_restored で読み直す."""
+    with _LOCK:
+        if not _STATE.enabled:
+            _STATE.next_retry_at = None
 
 
 def backup_if_changed(config: BackupConfig | None = None) -> bool:
@@ -335,7 +398,7 @@ def backup_if_changed(config: BackupConfig | None = None) -> bool:
                 _, latest_sha = client.download()
                 sha = client.upload(data, latest_sha, message)
         except Exception as exc:  # 画面の処理（再実行など）を止めないよう、ここで受け止めて知らせる
-            LOGGER.warning("data backup: upload failed: %s", _describe(exc))
+            _log(f"upload failed: {_describe(exc)}")
             _STATE.error = BACKUP_FAILED_MESSAGE
             return False
         _STATE.remote_sha = sha

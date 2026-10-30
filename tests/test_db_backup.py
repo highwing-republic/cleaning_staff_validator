@@ -11,6 +11,7 @@ import base64
 import io
 import json
 import sqlite3
+import ssl
 import urllib.error
 from datetime import timedelta
 from pathlib import Path
@@ -87,6 +88,7 @@ def remote(monkeypatch, db_file):
     db_backup.reset_state()
     fake = FakeRemote()
     monkeypatch.setattr(db_backup, "client_factory", lambda config: FakeClient(fake))
+    monkeypatch.setattr(db_backup, "RESTORE_BACKOFF_SECONDS", (0.0, 0.0))  # テストでは待たない
     yield fake
     db_backup.reset_state()
 
@@ -316,17 +318,75 @@ def test_restore_is_retried_after_a_while(remote, db_file, tmp_path, monkeypatch
     open_app_once()  # 失敗している間に空のデータベースができてしまっても
     remote.fail_download = False
 
-    db_backup.ensure_restored(CONFIG)  # すぐには読み直さない
-    assert remote.downloads == 1
+    attempts = remote.downloads  # 1回の画面表示の中では、何回か読み直してからあきらめる
+    assert attempts == db_backup.RESTORE_ATTEMPTS
+    db_backup.ensure_restored(CONFIG)  # あきらめたあと、すぐには読み直さない
+    assert remote.downloads == attempts
 
     later = start + timedelta(seconds=db_backup.RESTORE_RETRY_SECONDS + 1)
     monkeypatch.setattr(db_backup, "_now", lambda: later)
     db_backup.ensure_restored(CONFIG)
 
-    assert remote.downloads == 2
+    assert remote.downloads == attempts + 1
     assert staff_names(db_file) == ["山田"]  # 控えの内容に入れ替わる
     assert db_backup.status()["enabled"] is True
     assert db_backup.status()["error"] is None
+
+
+def test_restore_retries_within_one_page_view(remote, db_file, tmp_path, monkeypatch):
+    """起動直後の一時的な通信エラーなら、その場の読み直しで戻る."""
+    remote.put(make_db(tmp_path / "saved.db", "山田"))
+    failures = {"left": 2}
+    original = FakeClient.download
+
+    def flaky(self):
+        if failures["left"]:
+            failures["left"] -= 1
+            self.remote.downloads += 1
+            raise BackupError("network error: URLError: temporary failure")
+        return original(self)
+
+    monkeypatch.setattr(FakeClient, "download", flaky)
+    db_backup.ensure_restored(CONFIG)
+    assert remote.downloads == 3
+    assert staff_names(db_file) == ["山田"]
+    assert db_backup.status()["enabled"] is True
+
+
+def test_retry_now_skips_the_wait(remote, db_file, tmp_path):
+    remote.put(make_db(tmp_path / "saved.db", "山田"))
+    remote.fail_download = True
+    db_backup.ensure_restored(CONFIG)
+    remote.fail_download = False
+    db_backup.ensure_restored(CONFIG)
+    assert db_backup.status()["restore_failed"] is True  # 待ち時間中は読み直さない
+
+    db_backup.retry_now()
+    db_backup.ensure_restored(CONFIG)
+    assert staff_names(db_file) == ["山田"]
+    assert db_backup.status()["restore_failed"] is False
+
+
+def test_log_lines_explain_what_happened(remote, db_file, tmp_path, capsys, monkeypatch):
+    """Streamlit Cloud のログで、戻せたか・なぜ戻せなかったかが分かる（トークンは出さない）."""
+    remote.put(make_db(tmp_path / "saved.db", "山田"))
+    db_backup.ensure_restored(CONFIG)
+    err = capsys.readouterr().err
+    assert "data backup: restored" in err and CONFIG.repo in err
+
+    db_backup.reset_state()
+    monkeypatch.setattr(db_backup, "load_config", lambda: None)
+    db_backup.ensure_restored()
+    db_backup.ensure_restored()
+    err = capsys.readouterr().err
+    assert err.count("settings [data_backup] not found") == 1  # 毎回は出さない
+
+    db_backup.reset_state()
+    remote.fail_download = True
+    db_backup.ensure_restored(CONFIG)
+    err = capsys.readouterr().err
+    assert "restore failed (attempt 1/3): GitHub returned 500" in err
+    assert "secret-token" not in err
 
 
 def test_broken_backup_does_not_replace_the_database(remote, db_file):
@@ -417,7 +477,8 @@ def http(monkeypatch):
     calls: list = []
     responses: list = []
 
-    def fake_urlopen(request, timeout):
+    def fake_urlopen(request, timeout, context=None):
+        assert isinstance(context, ssl.SSLContext)  # 証明書の設定を必ず渡す
         calls.append(request)
         status, payload = responses.pop(0)
         if isinstance(status, Exception):
@@ -493,6 +554,26 @@ def test_network_error_does_not_leak_the_token(http):
         GitHubContentsClient(CONFIG).download()
     assert "secret-token" not in str(info.value)
     assert info.value.__cause__ is None
+
+
+def test_network_error_keeps_the_reason(http):
+    """証明書の失敗などの理由がログで分かるようにする."""
+    _, responses = http
+    reason = ssl.SSLCertVerificationError("certificate verify failed: unable to get local issuer certificate")
+    responses.append((urllib.error.URLError(reason), b""))
+    with pytest.raises(BackupError, match="certificate verify failed"):
+        GitHubContentsClient(CONFIG).download()
+
+
+def test_ssl_context_adds_certifi_when_available():
+    """新しい Python 環境で OS の証明書が見つからなくても、certifi の証明書で GitHub に接続できる."""
+    certifi = pytest.importorskip("certifi")
+    db_backup._SSL_CONTEXT = None
+    context = db_backup._ssl_context()
+    plain = ssl.create_default_context()
+    plain.load_verify_locations(cafile=certifi.where())
+    assert context.cert_store_stats()["x509_ca"] >= plain.cert_store_stats()["x509_ca"] > 0
+    assert db_backup._ssl_context() is context  # 毎回作り直さない
 
 
 def test_upload_sends_base64_with_sha(http):
@@ -580,3 +661,21 @@ def test_app_warns_when_the_backup_cannot_be_read(remote, db_file, tmp_path):
     at = run_app(SECRETS)
     assert any(RESTORE_FAILED_MESSAGE == e.value for e in at.error)
     assert remote.uploads == []
+
+
+def test_app_does_not_open_an_empty_database_while_the_backup_cannot_be_read(
+    remote, db_file, tmp_path
+):
+    """読み込めていないあいだは空の画面（スタッフ0人）を出さず、「もう一度読み込む」だけを出す."""
+    remote.put(make_db(tmp_path / "saved.db", "山田"))
+    remote.fail_download = True
+    at = run_app(SECRETS)
+    assert not db_file.exists()  # 空のデータベースを作らない
+    assert not [b for b in at.button if b.label == "勤務表をつくる"]
+
+    remote.fail_download = False
+    next(b for b in at.button if b.label == "もう一度読み込む").click().run()
+    assert not at.exception
+    assert staff_names(db_file) == ["山田"]
+    assert [b for b in at.button if b.label == "勤務表をつくる"]  # ホーム画面に戻る
+    assert any("自動で保存先に控えています" in c.value for c in at.sidebar.caption)
