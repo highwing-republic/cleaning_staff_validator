@@ -16,10 +16,12 @@ SQLite・Streamlitへは依存しない。Service層が集めた GenerationReque
     （Pass 2.5: 先読みの日＝期間の直後でまだ勤務表のない日、の不足を最小化。
       連続勤務の上限で次の期間の最初の数日が困らないようにする。結果には含めない）
     Pass 3: Pass 1〜2 を固定し、明示目標・チェッカー目標の乖離を最小化
+    （Pass 3.5: 必要人数を超えて入れた人数を最小化. 目標を決めていない人の自動目安のために
+      出られる曜日へ人を積み増さない）
     Pass 4: Pass 1〜3 を固定し、目標未設定者の自動目安との乖離を最小化
     Pass 5: Pass 1〜4 を固定し、個人別乖離の最大値を最小化
     Pass 6: Pass 1〜5 を固定し、総出勤日数を最小化
-目標勤務日数を満たすための必要人数超過は許容する。一方、同じ公平性なら
+明示した目標勤務日数を満たすための必要人数超過は許容する（自動目安のための超過はしない）。一方、同じ公平性なら
 総出勤日数が少ない案を選び、不要な過剰配置は避ける。重み調整には依存しない。
 
 目標未設定者は、チェッカーなら週5日、その他は期間の最低必要人数を
@@ -139,6 +141,7 @@ def generate_shift(request: GenerationRequest) -> ScheduleGenerationResult:
         effective_targets,
         automatic_average_ids,
         lookahead_shortages,
+        days,
     )
 
     total_budget = (
@@ -191,6 +194,7 @@ def _objective_factories(
     effective_targets: dict[int, int],
     automatic_average_ids: set[int],
     lookahead_shortages: dict | None = None,
+    days: list[GenerationDay] | None = None,
 ) -> list[tuple[str, object]]:
     """優先順位の高い順に (名前, 目的式を作る関数) を並べて返す.
 
@@ -240,6 +244,17 @@ def _objective_factories(
                 ),
             )
         )
+    # 必要人数を超えて入れた人数. 明示した目標日数（本人の希望）より後、自動目安より前。
+    # 目標を決めていない人を「平均くらい働かせる」ために、出られる曜日へ人を積み増さない
+    staffed_days = [
+        day for day in (days or [])
+        if day.requirement_is_set and day.work_date in set(work_dates)
+    ]
+    if staffed_days and x:
+        factories.append(
+            ("excess_staff", lambda: _add_excess_staff(model, x, staff_list, staffed_days))
+        )
+
     if automatic_average_ids:
         factories.append(
             (
@@ -299,6 +314,22 @@ def _add_target_deviations(
         deviations[staff.staff_id] = deviation
 
     return deviations
+
+
+def _add_excess_staff(
+    model: cp_model.CpModel,
+    x: dict,
+    staff_list: list[GenerationStaff],
+    days: list[GenerationDay],
+):
+    """日ごとに「必要人数を超えて入れた人数」を作り、その合計を返す."""
+    excesses = []
+    for day in days:
+        working = sum(x[(staff.staff_id, day.work_date)] for staff in staff_list)
+        excess = model.NewIntVar(0, len(staff_list), f"excess_{day.work_date}")
+        model.Add(excess >= working - max(0, day.required_total_staff))
+        excesses.append(excess)
+    return sum(excesses)
 
 
 def _add_max_target_deviation(

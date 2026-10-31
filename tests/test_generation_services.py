@@ -186,19 +186,19 @@ def test_generate_schedule_meets_requirements(conn):
     assert result.solver_status == SOLVER_STATUS_OPTIMAL
     assert result.total_shortage == 0
     assert all(d.scheduled_staff_count >= 2 for d in result.days)
-    assert result.total_workdays == 15
+    assert result.total_workdays == 14  # 必要ちょうど（多すぎる日を作らない）
     assert all(d.status == GENERATION_STATUS_OK for d in result.days)
 
 
-def test_generate_schedule_balances_unset_targets_with_small_overstaffing(conn):
+def test_generate_schedule_balances_unset_targets_without_overstaffing(conn):
     for index in range(1, 6):
         add_staff(conn, f"000{index}", f"S{index}")
     set_requirements(conn, DATES, required_total_staff=2)
 
     result = services.generate_schedule(conn, DATES)
-    assert all(d.scheduled_staff_count >= 2 for d in result.days)
-    assert [s.scheduled_days for s in result.staff_summaries] == [3] * 5
-    assert result.total_workdays == 2 * len(DATES) + 1
+    assert all(d.scheduled_staff_count == 2 for d in result.days)
+    assert sorted(s.scheduled_days for s in result.staff_summaries) == [2, 3, 3, 3, 3]
+    assert result.total_workdays == 2 * len(DATES)
 
 
 def test_generate_schedule_reports_staff_shortage(conn):
