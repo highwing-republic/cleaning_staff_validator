@@ -14,6 +14,7 @@ from datetime import date
 import sqlite3
 
 from src import repositories as repo
+from src import role_assignment
 from src import services
 from src.constants import TIME_STATUS_OK
 from src.models import StaffDayCondition, StaffDetail
@@ -30,12 +31,17 @@ class RoleCoverage:
     role_id: int
     role_name: str
     required: int
+    # この役割を受け持てる人（自分の役割の人＋代わりにできる人）
     available: tuple[str, ...] = ()
     # 普段なら出られるが「必ず休み」の人（足りない理由として示す）
     off_by_request: tuple[str, ...] = ()
+    # 1人1役割で割り当てたときの不足（None なら人数の差で数える）
+    missing: int | None = None
 
     @property
     def shortfall(self) -> int:
+        if self.missing is not None:
+            return self.missing
         return max(0, self.required - len(self.available))
 
 
@@ -150,29 +156,37 @@ def evaluate_coverage(
         available, off, unscheduled = [], [], []
         by_role_available: dict[int, list[str]] = {}
         by_role_off: dict[int, list[str]] = {}
+        people: list[role_assignment.RolePerson] = []
         skill_available = 0
         for detail in data.staff:
             sid = detail.staff.staff_id
             name = detail.staff.staff_name
             role_id = detail.staff.role_id
+            fillable = [role_id] + [r for r in detail.substitute_role_ids if r != role_id]
             condition = by_staff_date.get((sid, work_date))
             if condition is None:
                 continue
             if (sid, work_date) in excluded:
                 if condition.base_available or condition.available_extra:
                     off.append(name)
-                    by_role_off.setdefault(role_id, []).append(name)
+                    for r in fillable:
+                        by_role_off.setdefault(r, []).append(name)
                 continue
             if _can_be_scheduled(condition):
                 available.append(name)
-                by_role_available.setdefault(role_id, []).append(name)
+                people.append(role_assignment.RolePerson(sid, role_id, tuple(detail.substitute_role_ids)))
+                for r in fillable:
+                    by_role_available.setdefault(r, []).append(name)
                 if skill_level and detail.staff.skill_level >= skill_level:
                     skill_available += 1
             elif condition.absolute_off and condition.base_available:
                 off.append(name)
-                by_role_off.setdefault(role_id, []).append(name)
+                for r in fillable:
+                    by_role_off.setdefault(r, []).append(name)
             elif condition.can_work:
                 unscheduled.append((name, role_id))
+        # 1人1役割（代わりにできる役割を含む）で割り当てたときの不足
+        missing = role_assignment.role_shortages(people, role_counts)
         roles = tuple(
             RoleCoverage(
                 role_id=role_id,
@@ -180,6 +194,7 @@ def evaluate_coverage(
                 required=count,
                 available=tuple(by_role_available.get(role_id, [])),
                 off_by_request=tuple(by_role_off.get(role_id, [])),
+                missing=missing.get(role_id, 0),
             )
             for role_id, count in sorted(role_counts.items())
             if count > 0
@@ -214,6 +229,12 @@ def describe_role_shortfall(role: RoleCoverage) -> str:
     """'リーダー：出られる人がいません（テスト太郎さんが必ず休み）' など."""
     if not role.available:
         text = f"{role.role_name}：出られる人がいません"
+    elif len(role.available) >= role.required:
+        # 代わりにできる人を数えると足りるが、その人がほかの役割でも必要
+        text = (
+            f"{role.role_name}：{role.shortfall}人足りません"
+            f"（代わりにできる{_names(role.available)}は、ほかの役割でも必要です）"
+        )
     else:
         text = f"{role.role_name}：出られる人が{len(role.available)}人です（必要{role.required}人）"
     if role.off_by_request:
@@ -265,14 +286,17 @@ def absence_warning(
         return None  # もともと出られない日（休んでも体制は変わらない）
     after = evaluate_coverage(data, excluded={(staff_id, work_date)})[data.dates.index(work_date)]
     day = format_date_short(work_date)
-    role_before = before.role(detail.staff.role_id)
-    role_after = after.role(detail.staff.role_id)
-    if role_after is not None and role_after.shortfall > (role_before.shortfall if role_before else 0):
+    # 自分の役割から先に見る（代わりにできる役割の不足も知らせる）
+    order = sorted(after.roles, key=lambda r: r.role_id != detail.staff.role_id)
+    for role_after in order:
+        role_before = before.role(role_after.role_id)
+        if role_after.shortfall <= (role_before.shortfall if role_before else 0):
+            continue
         if not role_after.available:
             return f"{day}に{_san(name)}が休むと、出られる{role_after.role_name}がいなくなります。"
         return (
-            f"{day}に{_san(name)}が休むと、出られる{role_after.role_name}が"
-            f"{len(role_after.available)}人になり、必要な{role_after.required}人に足りません。"
+            f"{day}に{_san(name)}が休むと、{role_after.role_name}が"
+            f"{role_after.shortfall}人足りなくなります。"
         )
     if after.total_shortfall > before.total_shortfall:
         return (

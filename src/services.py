@@ -512,6 +512,7 @@ def build_generation_request(
                 day_conditions=conditions,
                 max_consecutive_days=detail.staff.max_consecutive_days,
                 target_days_per_week=detail.staff.target_days_per_week,
+                substitute_role_ids=detail.substitute_role_ids,
             )
         )
 
@@ -1199,7 +1200,8 @@ def validate_current_schedule(
 
     schedule = get_current_schedule(conn, work_dates)
     first, last = work_dates[0], work_dates[-1]
-    staff = repo.list_staff(conn, include_inactive=True)
+    details = repo.list_staff_details(conn, include_inactive=True)
+    staff = [d.staff for d in details]
     return validate_schedule_period(
         work_dates,
         schedule,
@@ -1208,6 +1210,9 @@ def validate_current_schedule(
         staff,
         get_role_names(conn),
         active_staff_ids=frozenset(s.staff_id for s in staff if s.active),
+        substitute_roles={
+            d.staff.staff_id: d.substitute_role_ids for d in details if d.substitute_role_ids
+        },
     )
 
 

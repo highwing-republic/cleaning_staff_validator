@@ -63,6 +63,7 @@ from src.models import (
     ScheduleGenerationResult,
     StaffGenerationSummary,
 )
+from src import role_assignment
 from src.period_utils import parse_date
 
 _SOLVER_STATUS_BY_CODE = {
@@ -544,15 +545,13 @@ def _add_requirement_constraints(
         if day.max_total_staff is not None:
             model.Add(sum(working_today) <= day.max_total_staff)
 
-        # ロール別必要人数（1スタッフ1ロール）
+        # ロール別必要人数（1スタッフ1ロール. 代わりにできる役割がある人は、その日どれか1つを受け持つ）
+        needed_roles = {r for r, n in day.role_requirements.items() if n > 0}
+        acting = _acting_role_terms(model, x, staff_list, day.work_date, needed_roles)
         for role_id, required_count in day.role_requirements.items():
             if required_count <= 0:
                 continue
-            role_working = [
-                x[(staff.staff_id, day.work_date)]
-                for staff in staff_list
-                if staff.role_id == role_id
-            ]
+            role_working = acting.get(role_id, [])
             shortage = model.NewIntVar(
                 0, required_count, f"role_shortage_{day.work_date}_{role_id}"
             )
@@ -573,6 +572,37 @@ def _add_requirement_constraints(
             shortages[("skill", day.work_date)] = shortage
 
     return shortages
+
+
+def _acting_role_terms(
+    model: cp_model.CpModel,
+    x: dict,
+    staff_list: list[GenerationStaff],
+    work_date: str,
+    needed_roles: set[int],
+) -> dict[int, list]:
+    """役割ごとに「その日その役割を受け持つ」式を返す.
+
+    代わりにできる役割のない人は、出勤 = 自分の役割を受け持つ（x をそのまま使う）。
+    代わりにできる役割（その日に必要人数のあるもの）がある人は、役割ごとに 0/1 を置き、
+    合計が出勤（x）と等しくなるようにする（1日に受け持つのは1つ）。
+    """
+    terms: dict[int, list] = {}
+    for staff in staff_list:
+        working = x[(staff.staff_id, work_date)]
+        roles = [staff.role_id] + [
+            r for r in staff.substitute_role_ids if r in needed_roles and r != staff.role_id
+        ]
+        if len(roles) == 1:
+            terms.setdefault(staff.role_id, []).append(working)
+            continue
+        choices = []
+        for role_id in roles:
+            choice = model.NewBoolVar(f"act_{staff.staff_id}_{work_date}_{role_id}")
+            terms.setdefault(role_id, []).append(choice)
+            choices.append(choice)
+        model.Add(sum(choices) == working)
+    return terms
 
 
 # ---------------------------------------------------------------------------
@@ -755,14 +785,16 @@ def _build_daily_results(
                     1 for staff in working if staff.skill_level >= day.required_skill_level
                 )
                 skill_shortage = max(0, day.required_skill_count - skilled)
-            role_shortages = {}
-            for role_id, required_count in day.role_requirements.items():
-                if required_count <= 0:
-                    continue
-                placed = sum(1 for staff in working if staff.role_id == role_id)
-                missing = max(0, required_count - placed)
-                if missing > 0:
-                    role_shortages[role_id] = missing
+            # 代わりにできる役割も考えて、できるだけ多く満たす割り当てで不足を数える
+            role_shortages = role_assignment.role_shortages(
+                [
+                    role_assignment.RolePerson(
+                        staff.staff_id, staff.role_id, tuple(staff.substitute_role_ids)
+                    )
+                    for staff in working
+                ],
+                day.role_requirements,
+            )
 
         if not day.requirement_is_set:
             status = GENERATION_STATUS_REQUIREMENT_MISSING

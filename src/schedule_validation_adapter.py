@@ -14,6 +14,7 @@
 
 import dataclasses
 
+from src import role_assignment
 from src.constants import (
     CLEANING_DEPARTMENT,
     SCHEDULE_DAY_DRAFT,
@@ -182,6 +183,37 @@ def _rewrite_message(
     return dataclasses.replace(issue, message=message)
 
 
+def _with_acting_roles(
+    day: ScheduleDayView,
+    role_requirements: dict[int, int],
+    staff_by_id: dict[int, StaffInput],
+    substitute_roles: dict[int, tuple[int, ...]],
+) -> dict[int, StaffInput]:
+    """その日に出勤する人の役割を「受け持つ役割」に置き換えた staff_by_id.
+
+    代わりにできる役割のある人がいる日だけ、必要人数をできるだけ多く満たす割り当てを求める。
+    """
+    working = [
+        staff_by_id[sid]
+        for sid, assignment in day.assignments.items()
+        if assignment.is_working and sid in staff_by_id
+    ]
+    if not any(substitute_roles.get(s.staff_id) for s in working):
+        return staff_by_id
+    acting = role_assignment.assign_roles(
+        [
+            role_assignment.RolePerson(s.staff_id, s.role_id, tuple(substitute_roles.get(s.staff_id, ())))
+            for s in working
+        ],
+        role_requirements,
+    )
+    replaced = dict(staff_by_id)
+    for staff_id, role_id in acting.items():
+        if role_id != staff_by_id[staff_id].role_id:
+            replaced[staff_id] = dataclasses.replace(staff_by_id[staff_id], role_id=role_id)
+    return replaced
+
+
 def validate_schedule_day(
     work_date: str,
     day: ScheduleDayView | None,
@@ -190,6 +222,7 @@ def validate_schedule_day(
     staff_by_id: dict[int, StaffInput],
     role_names: dict[int, str],
     active_staff_ids: set[int] | frozenset[int] = frozenset(),
+    substitute_roles: dict[int, tuple[int, ...]] | None = None,
 ) -> ScheduleDayValidationResult:
     """勤務表1日分を検証する.
 
@@ -215,6 +248,8 @@ def validate_schedule_day(
             schedule_issues=schedule_issues,
         )
 
+    if substitute_roles:
+        staff_by_id = _with_acting_roles(day, role_requirements, staff_by_id, substitute_roles)
     shifts = to_shift_inputs(day, staff_by_id)
     staffing = validate_day(
         work_date, shifts, requirement, role_requirements, staff_by_id, role_names
@@ -242,6 +277,7 @@ def validate_schedule_period(
     staff: list[StaffInput],
     role_names: dict[int, str],
     active_staff_ids: set[int] | frozenset[int] | None = None,
+    substitute_roles: dict[int, tuple[int, ...]] | None = None,
 ) -> SchedulePeriodValidationResult:
     """対象期間の勤務表を検証する（勤務表がない日も1日として返す）.
 
@@ -266,6 +302,7 @@ def validate_schedule_period(
             staff_by_id,
             role_names,
             active_staff_ids,
+            substitute_roles,
         )
         for work_date in work_dates
     ]

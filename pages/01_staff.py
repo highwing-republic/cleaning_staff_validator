@@ -106,6 +106,22 @@ def _special_skill_multiselect(key: str, assigned: tuple[int, ...] = ()) -> list
     )
 
 
+def _substitute_role_multiselect(key: str, assigned: tuple[int, ...] = ()) -> list[int]:
+    """代わりにできる役割. 自分の役割を選んでも保存しない（保存時に外す）."""
+    return st.multiselect(
+        "代わりにできる役割（任意）",
+        options=role_ids,
+        default=[r for r in assigned if r in role_ids],
+        format_func=lambda rid: role_name_by_id.get(rid, str(rid)),
+        key=key,
+        placeholder="なし（あれば選ぶ）",
+        help=(
+            "その役割の人が足りない日に、代わりに受け持てる役割です。"
+            "勤務表では、1日に受け持つ役割は1つとして数えます。"
+        ),
+    )
+
+
 def _standard_time_inputs(
     key_prefix: str, start: str | None, end: str | None
 ) -> tuple[str | None, str | None]:
@@ -189,6 +205,9 @@ if staff_details:
                 "氏名": d.staff.staff_name,
                 "部門": d.staff.department or "",
                 "ロール": role_name_by_id.get(d.staff.role_id, d.staff.role_id),
+                "代わりにできる役割": " / ".join(
+                    role_name_by_id.get(r, str(r)) for r in d.substitute_role_ids
+                ),
                 "総合スキル": format_skill_level(d.staff.skill_level),
                 "特殊スキル": " / ".join(
                     special_skill_name_by_id.get(i, str(i)) for i in d.special_skill_ids
@@ -236,6 +255,7 @@ with st.form("create_staff_form", clear_on_submit=True):
         index=default_role_index,
         format_func=lambda rid: role_name_by_id.get(rid, str(rid)),
     )
+    new_substitute_role_ids = _substitute_role_multiselect("create_substitute_roles")
     skill_level = st.selectbox(
         "総合スキル",
         options=skill_options,
@@ -285,6 +305,7 @@ with st.form("create_staff_form", clear_on_submit=True):
                     max_consecutive_days=new_max_consecutive,
                     weekdays=new_weekdays,
                     special_skill_ids=new_special_skill_ids,
+                    substitute_role_ids=new_substitute_role_ids,
                 )
             except sqlite3.IntegrityError:
                 st.error(f"従業員番号「{employee_code.strip()}」はすでに登録されています。")
@@ -331,6 +352,9 @@ with st.form("edit_staff_form"):
         index=role_ids.index(target.role_id),
         format_func=lambda rid: role_name_by_id.get(rid, str(rid)),
         key=f"{edit_key}_role_id",
+    )
+    edit_substitute_role_ids = _substitute_role_multiselect(
+        f"{edit_key}_substitute_roles", detail.substitute_role_ids
     )
     edit_skill_level = st.selectbox(
         "総合スキル",
@@ -392,6 +416,7 @@ with st.form("edit_staff_form"):
                     max_consecutive_days=edit_max_consecutive,
                     weekdays=edit_weekdays,
                     special_skill_ids=edit_special_skill_ids,
+                    substitute_role_ids=edit_substitute_role_ids,
                 )
             except sqlite3.IntegrityError:
                 st.error(f"従業員番号「{code}」はすでに登録されています。")

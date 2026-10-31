@@ -118,6 +118,7 @@ def create_staff(
     max_consecutive_days: int | None = None,
     weekdays: list[int] | tuple[int, ...] | None = None,
     special_skill_ids: list[int] | tuple[int, ...] | None = None,
+    substitute_role_ids: list[int] | tuple[int, ...] | None = None,
 ) -> int:
     """スタッフを作成する. employee_code 重複時は sqlite3.IntegrityError.
 
@@ -146,6 +147,7 @@ def create_staff(
         staff_id = cur.lastrowid
         _replace_staff_weekdays(conn, staff_id, weekdays)
         _replace_staff_special_skills(conn, staff_id, special_skill_ids)
+        _replace_staff_substitute_roles(conn, staff_id, role_id, substitute_role_ids)
     return staff_id
 
 
@@ -165,6 +167,7 @@ def update_staff(
     max_consecutive_days: int | None = None,
     weekdays: list[int] | tuple[int, ...] | None = None,
     special_skill_ids: list[int] | tuple[int, ...] | None = None,
+    substitute_role_ids: list[int] | tuple[int, ...] | None = None,
 ) -> None:
     """スタッフを更新する.
 
@@ -195,6 +198,7 @@ def update_staff(
             raise ValueError(f"staff not found: {staff_id!r}")
         _replace_staff_weekdays(conn, staff_id, weekdays)
         _replace_staff_special_skills(conn, staff_id, special_skill_ids)
+        _replace_staff_substitute_roles(conn, staff_id, role_id, substitute_role_ids)
 
 
 def deactivate_staff(conn: sqlite3.Connection, staff_id: int) -> None:
@@ -240,6 +244,39 @@ def _replace_staff_special_skills(
         "INSERT INTO staff_special_skills (staff_id, special_skill_id) VALUES (?, ?)",
         [(staff_id, int(skill_id)) for skill_id in sorted(set(special_skill_ids))],
     )
+
+
+def _replace_staff_substitute_roles(
+    conn: sqlite3.Connection,
+    staff_id: int,
+    own_role_id: int,
+    substitute_role_ids: list[int] | tuple[int, ...] | None,
+) -> None:
+    """代わりにできる役割を全置換する（Noneなら変更しない）. 自分の役割は保存しない."""
+    if substitute_role_ids is None:
+        # 役割を変えて、前の「代わり」が自分の役割と同じになった場合は外す
+        conn.execute(
+            "DELETE FROM staff_substitute_roles WHERE staff_id = ? AND role_id = ?",
+            (staff_id, own_role_id),
+        )
+        return
+    conn.execute("DELETE FROM staff_substitute_roles WHERE staff_id = ?", (staff_id,))
+    conn.executemany(
+        "INSERT INTO staff_substitute_roles (staff_id, role_id) VALUES (?, ?)",
+        [
+            (staff_id, int(role_id))
+            for role_id in sorted(set(substitute_role_ids))
+            if int(role_id) != own_role_id
+        ],
+    )
+
+
+def get_staff_substitute_role_ids(conn: sqlite3.Connection, staff_id: int) -> tuple[int, ...]:
+    rows = conn.execute(
+        "SELECT role_id FROM staff_substitute_roles WHERE staff_id = ? ORDER BY role_id",
+        (staff_id,),
+    ).fetchall()
+    return tuple(row["role_id"] for row in rows)
 
 
 def get_staff_weekdays(conn: sqlite3.Connection, staff_id: int) -> tuple[int, ...]:
@@ -291,6 +328,7 @@ def get_staff_detail(conn: sqlite3.Connection, staff_id: int) -> StaffDetail | N
         staff=staff,
         weekdays=get_staff_weekdays(conn, staff_id),
         special_skill_ids=get_staff_special_skill_ids(conn, staff_id),
+        substitute_role_ids=get_staff_substitute_role_ids(conn, staff_id),
     )
 
 
@@ -316,11 +354,20 @@ def list_staff_details(
     ):
         skills.setdefault(row["staff_id"], []).append(row["special_skill_id"])
 
+    substitutes: dict[int, list[int]] = {}
+    for row in conn.execute(
+        "SELECT staff_id, role_id FROM staff_substitute_roles ORDER BY staff_id, role_id"
+    ):
+        substitutes.setdefault(row["staff_id"], []).append(row["role_id"])
+
     return [
         StaffDetail(
             staff=staff,
             weekdays=tuple(weekdays.get(staff.staff_id, ())),
             special_skill_ids=tuple(skills.get(staff.staff_id, ())),
+            substitute_role_ids=tuple(
+                r for r in substitutes.get(staff.staff_id, ()) if r != staff.role_id
+            ),
         )
         for staff in staff_list
     ]
