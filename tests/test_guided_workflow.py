@@ -101,7 +101,8 @@ def test_default_base_counts_are_the_usual_crew(conn):
     assert workflow.get_defaults(conn) == (7, 6)
 
 
-def test_first_time_counts_also_save_the_default_role_minimums(conn):
+def test_first_time_counts_save_the_role_breakdown_from_the_count(conn):
+    """役割の内訳は人数から決める（リーダー1・チェッカー1・残りクリーナー. 7名→5名、8名→6名）."""
     add_staff(conn)
     dates = DATES[:2]
     fingerprint = workflow.review_fingerprint(conn, dates, "requirements")
@@ -110,7 +111,8 @@ def test_first_time_counts_also_save_the_default_role_minimums(conn):
 
     counts = {(r.work_date, r.role_id): r.required_count
               for r in repo.list_role_requirements(conn, dates[0], dates[-1])}
-    assert counts == {(d, role): n for d in dates for role, n in ((1, 1), (2, 1), (3, 5))}
+    assert counts == {(dates[0], 1): 1, (dates[0], 2): 1, (dates[0], 3): 5,
+                      (dates[1], 1): 1, (dates[1], 2): 1, (dates[1], 3): 6}
 
 
 def test_first_time_weekend_counts_save_four_cleaners(conn):
