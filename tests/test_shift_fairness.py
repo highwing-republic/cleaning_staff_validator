@@ -97,13 +97,13 @@ def test_f03_shortage_minimisation_outranks_day_off_requests():
     assert result.issues_with_code(GENERATION_ISSUE_STAFF_SHORTAGE) == []
 
 
-def test_f04_automatic_targets_allow_small_overstaffing_for_balance():
-    """必要5枠を3名で分担すると、偏りを避けるため各2日の6枠を許容する."""
+def test_f04_automatic_targets_do_not_overstaff_for_balance():
+    """必要5枠を3名で分担する. 自動目安のために6枠目（多すぎる日）は作らず、2・2・1日で分ける."""
     result = run([make_staff(i) for i in (1, 2, 3)], required(1))
     scheduled = [result.staff_summary(i).scheduled_days for i in (1, 2, 3)]
     assert result.total_shortage == 0
-    assert scheduled == [2, 2, 2]
-    assert result.total_workdays == len(DATES) + 1
+    assert sorted(scheduled) == [1, 2, 2]
+    assert result.total_workdays == len(DATES)
 
 
 def test_day_off_request_is_not_an_issue():
@@ -207,7 +207,8 @@ def test_mixed_staff_with_and_without_targets():
     assert result.staff_summary(2).has_target is True
     assert result.staff_summary(2).target_is_automatic is True
     assert result.staff_summary(1).scheduled_days == len(DATES_14)
-    assert result.staff_summary(2).scheduled_days == len(DATES_14) // 2
+    # 明示した目標（週7日）のAで毎日足りるため、目標を決めていないBを積み増さない
+    assert result.staff_summary(2).scheduled_days == 0
 
 
 def test_checker_without_an_explicit_target_uses_five_days_per_week():
@@ -332,7 +333,9 @@ def test_f10_day_off_request_outranks_the_target():
     assert result.prefer_off_worked_total == 0
     # targetへ近づけるなら A が全日勤務のはずだが、希望休を優先している
     assert result.staff_summary(1).scheduled_days == len(DATES) - 1
-    assert result.total_workdays == 7
+    # B は A が休む火曜だけ（自動目安のために多すぎる日は作らない）
+    assert worked_dates(result, 2) == {TUESDAY}
+    assert result.total_workdays == len(DATES)
 
 
 # ---------------------------------------------------------------------------
@@ -519,3 +522,37 @@ def test_prefer_off_respect_display_when_some_are_broken():
 def test_prefer_off_respect_display_without_requests():
     result = run([make_staff(1, "A")], required(1))
     assert format_prefer_off_respect(result) == "-"
+
+
+
+# ---------------------------------------------------------------------------
+# 多すぎる日を抑える（10月のバックテストで、曜日の偏りから火・木・金に8〜9人入っていた）
+# ---------------------------------------------------------------------------
+
+
+def test_people_who_can_only_come_on_one_day_are_not_piled_onto_it():
+    """B・C は火曜しか出られない. 自動目安のために火曜へ2人とも積み増さない（必要1名）."""
+    a = make_staff(1, "A")
+    b = make_staff(2, "B", weekdays=(1,))
+    c = make_staff(3, "C", weekdays=(1,))
+    result = run([a, b, c], required(1))
+    counts = [sum(1 for s in (1, 2, 3) if d in worked_dates(result, s)) for d in DATES]
+    assert result.total_shortage == 0
+    assert max(counts) == 1
+
+
+def test_explicit_target_may_still_exceed_the_requirement():
+    """本人が決めた目標日数（週7日）は、必要人数を超えても守る（希望なので）."""
+    a = make_staff(1, "A", target_days_per_week=7)
+    b = make_staff(2, "B", target_days_per_week=7)
+    result = run([a, b], required(1))
+    assert worked_dates(result, 1) == set(DATES)
+    assert worked_dates(result, 2) == set(DATES)
+
+
+def test_excess_avoidance_never_creates_a_shortage():
+    """多すぎる日を抑えるより、不足をなくす方が先."""
+    staff = [make_staff(i) for i in range(1, 5)]
+    result = run(staff, required(3))
+    assert result.total_shortage == 0
+    assert result.total_workdays == 3 * len(DATES)

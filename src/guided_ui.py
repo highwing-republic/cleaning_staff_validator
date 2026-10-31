@@ -142,7 +142,10 @@ def _inputs(conn, start, days, dates):
     _coverage_section(conn, dates)
 
     st.markdown("**最低何人必要ですか？**")
-    st.caption("必要に応じてこの人数より多く配置します。予約室数から人数を自動計算することはありません。")
+    st.caption(
+        "この人数を満たすように配置します。多く入れるのは、週に働く日数の目安を決めている人の分だけです。"
+        "予約室数から人数を自動計算することはありません。"
+    )
     weekday, weekend = workflow.get_defaults(conn)
     views = services.get_period_requirements(conn, dates)
     with st.expander(f"基本設定：平日 {weekday}人・土日 {weekend}人"):

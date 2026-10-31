@@ -1692,7 +1692,8 @@ def test_generate_page_shows_requirement_missing_days(db_path):
     assert list(daily["配置"])[0] == 0
 
 
-def test_generate_page_allows_small_overstaffing_for_balance(db_path):
+def test_generate_page_does_not_overstaff_for_balance(db_path):
+    """目標を決めていない人の自動目安のために、必要人数を超えて入れない."""
     _seed_generation_staff(db_path)
     at = _open_generate_page()
     dates = _generate_dates(at)
@@ -1704,10 +1705,9 @@ def test_generate_page_allows_small_overstaffing_for_balance(db_path):
     _click_generate(at)
 
     daily = _daily_table(at)
-    assert min(daily["配置"]) >= 1
-    assert max(daily["配置"]) == 2
+    assert min(daily["配置"]) == max(daily["配置"]) == 1
     metrics = {m.label: m.value for m in at.metric}
-    assert metrics["総出勤日数"] == f"{len(dates) + 1}日"
+    assert metrics["総出勤日数"] == f"{len(dates)}日"
 
 
 def test_generate_page_warns_about_staff_without_standard_time(db_path):
