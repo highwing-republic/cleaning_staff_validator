@@ -1219,13 +1219,12 @@ def validate_current_schedule(
 def _export_staff_order(
     staff: list[StaffInput], scheduled_ids: set[int]
 ) -> list[StaffInput]:
-    """勤務表に載せるスタッフを安定した順番で返す.
+    """勤務表に載せるスタッフを、スタッフ管理で決めた並び順で返す（staff はその順で渡す）.
 
     有効スタッフに加えて、勤務表に行がある無効スタッフも落とさない
     （当時の勤務表から人が消えないようにするため）。
     """
-    targets = [s for s in staff if s.active or s.staff_id in scheduled_ids]
-    return sorted(targets, key=lambda s: (s.role_id, s.employee_code, s.staff_id))
+    return [s for s in staff if s.active or s.staff_id in scheduled_ids]
 
 
 def build_schedule_export(

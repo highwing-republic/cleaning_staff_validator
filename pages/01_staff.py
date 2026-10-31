@@ -189,6 +189,44 @@ def _work_volume_inputs(
 
 
 # ---------------------------------------------------------------------------
+# 並び順
+# ---------------------------------------------------------------------------
+
+ORDER_OPEN_KEY = "_staff_order_open"
+
+
+def _order_section() -> None:
+    """並び順を上下のボタンで変える（押すとすぐ保存. 無効の人も含めた全員の順番）."""
+    ordered = repo.list_staff(conn, include_inactive=True)
+    with st.expander(
+        "並び順を変える（勤務表・印刷・Excelもこの順で並びます）",
+        expanded=st.session_state.get(ORDER_OPEN_KEY, False),
+    ):
+        st.caption(
+            "「上へ」「下へ」で1人ずつ動かします。押すとすぐ保存されます。"
+            "新しく登録した人は、同じ役割の人たちのすぐ後ろに入ります。"
+        )
+        last = len(ordered) - 1
+        for index, member in enumerate(ordered):
+            number_col, name_col, up_col, down_col, _ = st.columns(
+                [0.3, 2.4, 0.8, 0.8, 3], vertical_alignment="center"
+            )
+            number_col.markdown(f"{index + 1}")
+            label = f"{member.staff_name}（{role_name_by_id.get(member.role_id, member.role_id)}）"
+            name_col.markdown(label + ("　:gray[無効]" if not member.active else ""))
+            moved = False
+            if up_col.button("↑ 上へ", key=f"order_up_{member.staff_id}", disabled=index == 0,
+                             width="stretch"):
+                moved = repo.move_staff(conn, member.staff_id, -1)
+            if down_col.button("↓ 下へ", key=f"order_down_{member.staff_id}", disabled=index == last,
+                               width="stretch"):
+                moved = repo.move_staff(conn, member.staff_id, 1)
+            if moved:
+                st.session_state[ORDER_OPEN_KEY] = True  # 続けて動かせるよう開いたままにする
+                st.rerun()
+
+
+# ---------------------------------------------------------------------------
 # 一覧
 # ---------------------------------------------------------------------------
 
@@ -233,6 +271,7 @@ if staff_details:
         with st.expander(f"設定を確認してください（{len(setting_warnings)}件）", expanded=True):
             for name, warning in setting_warnings:
                 st.markdown(f"- **{name}**：{warning}")
+    _order_section()
 else:
     st.info(
         "スタッフがまだ登録されていません。"

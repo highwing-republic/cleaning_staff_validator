@@ -114,6 +114,7 @@ def test_staff_columns(conn):
         "target_days_per_week",
         "max_days_per_period",
         "max_consecutive_days",
+        "display_order",
     ]
 
 

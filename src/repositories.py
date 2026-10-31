@@ -62,14 +62,50 @@ def _row_to_staff_input(row: sqlite3.Row) -> StaffInput:
     )
 
 
+# スタッフ管理で決めた並び順（並び順がまだない人は最後. 同じなら登録順）
+_STAFF_ORDER = "ORDER BY display_order IS NULL, display_order, staff_id"
+
+
 def list_staff(conn: sqlite3.Connection, include_inactive: bool = True) -> list[StaffInput]:
+    """スタッフ一覧（スタッフ管理で決めた並び順）."""
     if include_inactive:
-        rows = conn.execute("SELECT * FROM staff ORDER BY staff_id").fetchall()
+        rows = conn.execute(f"SELECT * FROM staff {_STAFF_ORDER}").fetchall()
     else:
         rows = conn.execute(
-            "SELECT * FROM staff WHERE active = 1 ORDER BY staff_id"
+            f"SELECT * FROM staff WHERE active = 1 {_STAFF_ORDER}"
         ).fetchall()
     return [_row_to_staff_input(row) for row in rows]
+
+
+def _write_staff_order(conn: sqlite3.Connection, ordered_ids: list[int]) -> None:
+    conn.executemany(
+        "UPDATE staff SET display_order = ? WHERE staff_id = ?",
+        [(i, staff_id) for i, staff_id in enumerate(ordered_ids, start=1)],
+    )
+
+
+def reorder_staff(conn: sqlite3.Connection, ordered_ids: list[int]) -> None:
+    """並び順を ordered_ids の順にする（全スタッフの staff_id をちょうど1回ずつ渡す）."""
+    current = {s.staff_id for s in list_staff(conn)}
+    if len(ordered_ids) != len(set(ordered_ids)) or set(ordered_ids) != current:
+        raise ValueError("並び順には全スタッフを1回ずつ指定してください。")
+    with conn:
+        _write_staff_order(conn, list(ordered_ids))
+
+
+def move_staff(conn: sqlite3.Connection, staff_id: int, offset: int) -> bool:
+    """スタッフを offset だけ上（負）・下（正）へ動かす. 端で動けなければ False."""
+    ids = [s.staff_id for s in list_staff(conn)]
+    if staff_id not in ids:
+        return False
+    index = ids.index(staff_id)
+    target = index + offset
+    if offset == 0 or not 0 <= target < len(ids):
+        return False
+    ids.insert(target, ids.pop(index))
+    with conn:
+        _write_staff_order(conn, ids)
+    return True
 
 
 def get_staff(conn: sqlite3.Connection, staff_id: int) -> StaffInput | None:
@@ -145,10 +181,25 @@ def create_staff(
             ),
         )
         staff_id = cur.lastrowid
+        _place_new_staff(conn, staff_id, role_id)
         _replace_staff_weekdays(conn, staff_id, weekdays)
         _replace_staff_special_skills(conn, staff_id, special_skill_ids)
         _replace_staff_substitute_roles(conn, staff_id, role_id, substitute_role_ids)
     return staff_id
+
+
+def _place_new_staff(conn: sqlite3.Connection, staff_id: int, role_id: int) -> None:
+    """新しく登録した人を、同じ役割の人たちのすぐ後ろに並べる（同じ役割がいなければ最後）."""
+    others = [
+        (row["staff_id"], row["role_id"])
+        for row in conn.execute(f"SELECT staff_id, role_id FROM staff WHERE staff_id != ? {_STAFF_ORDER}",
+                                (staff_id,))
+    ]
+    same_role = [i for i, (_, rid) in enumerate(others) if rid == role_id]
+    position = same_role[-1] + 1 if same_role else len(others)
+    ids = [sid for sid, _ in others]
+    ids.insert(position, staff_id)
+    _write_staff_order(conn, ids)
 
 
 def update_staff(
