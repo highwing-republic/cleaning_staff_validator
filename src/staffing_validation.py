@@ -1,7 +1,7 @@
 """日別清掃体制の検証エンジン.
 
 DBアクセスは行わない。ACTIVE取込の勤務セル・日別必要条件・staff master を受け取り、
-日ごとに人数・上限・ロール・スキル・データ品質を判定する。
+日ごとに人数・上限・役割・スキル・データ品質を判定する。
 
 人数の数え方（1日・1人1セル）:
 - 確定清掃勤務者: available_for_cleaning = True（CSV部門=清掃 かつ TIME_RANGE）。未登録でも数える
@@ -9,10 +9,10 @@ DBアクセスは行わない。ACTIVE取込の勤務セル・日別必要条件
 - OTHER_DUTY / BLANK / 清掃以外の部門は数えない
 
 判定は「確定値で充足 → OK」「UNKNOWN・未登録が全員条件を満たせば充足 → WARNING」
-「それでも不足 → ERROR」の3段階。ロール・スキルは staff master 照合済みの人だけを確定値とし、
-未登録スタッフはどのロール・スキルでもあり得る人として最大可能人数に含める。
-ただし1人1ロールのため、未登録スタッフを複数ロールへ二重に割り当てられない。
-ロール別判定の後に全ロールを同時に満たせるかを判定する（ROLE_COMBINATION_SHORTAGE）。
+「それでも不足 → ERROR」の3段階。役割・スキルは staff master 照合済みの人だけを確定値とし、
+未登録スタッフはどの役割・スキルでもあり得る人として最大可能人数に含める。
+ただし1人1役割のため、未登録スタッフを複数役割へ二重に割り当てられない。
+役割別判定の後に全役割を同時に満たせるかを判定する（ROLE_COMBINATION_SHORTAGE）。
 """
 
 from dataclasses import dataclass
@@ -45,7 +45,7 @@ STAFF_OVER_MAX = "STAFF_OVER_MAX"
 STAFF_OVER_MAX_UNCERTAIN = "STAFF_OVER_MAX_UNCERTAIN"
 ROLE_SHORTAGE = "ROLE_SHORTAGE"
 ROLE_UNCERTAIN = "ROLE_UNCERTAIN"
-# 各ロールを個別に見るだけでは発見できない組み合わせ不足（1人1ロール制約）
+# 各役割を個別に見るだけでは発見できない組み合わせ不足（1人1役割制約）
 ROLE_COMBINATION_SHORTAGE = "ROLE_COMBINATION_SHORTAGE"
 SKILL_SHORTAGE = "SKILL_SHORTAGE"
 SKILL_UNCERTAIN = "SKILL_UNCERTAIN"
@@ -213,7 +213,7 @@ def _check_counted_requirement(
     uncertain_code: str,
     role_id: int | None = None,
 ) -> list[ValidationIssue]:
-    """ロール・スキル共通: known >= required → OK / possible >= required → WARNING / 他 → ERROR."""
+    """役割・スキル共通: known >= required → OK / possible >= required → WARNING / 他 → ERROR."""
     if required <= 0 or known >= required:
         return []
     if possible >= required:
@@ -251,13 +251,13 @@ def _check_role_combination(
     required_roles: dict[int, int],
     actual_roles: dict[int, int],
 ) -> list[ValidationIssue]:
-    """1人1ロール制約で、全ロールを同時に満たせるかを判定する.
+    """1人1役割制約で、全役割を同時に満たせるかを判定する.
 
-    ロール別判定では未登録スタッフを各ロールの候補として重複して数えるため、
+    役割別判定では未登録スタッフを各役割の候補として重複して数えるため、
     「未登録1名でリーダーもチェッカーも埋まる」ように見えてしまう。ここでは
-    1. 各ロールの不足 = 必要 - 確定
-    2. 同じロールの登録済みUNKNOWN勤務者で埋められる分を差し引く（ロールは確定しているため）
-    3. 残った不足の合計を、ロール不明の未登録候補（清掃 TIME_RANGE / UNKNOWN）の人数と比較する
+    1. 各役割の不足 = 必要 - 確定
+    2. 同じ役割の登録済みUNKNOWN勤務者で埋められる分を差し引く（役割は確定しているため）
+    3. 残った不足の合計を、役割不明の未登録候補（清掃 TIME_RANGE / UNKNOWN）の人数と比較する
     残不足合計 > 未登録候補数 なら、楽観的に見ても同時には満たせないため ERROR。
     """
     fixed_uncertain = {role_id: 0 for role_id in required_roles}
@@ -279,9 +279,9 @@ def _check_role_combination(
         ValidationIssue(
             ROLE_COMBINATION_SHORTAGE,
             VALIDATION_STATUS_ERROR,
-            "ロール別には充足可能に見えますが、候補スタッフ数が不足しているため、"
-            "必要なロールを同時に満たすことができません。"
-            f"ロール不足合計：{remaining}名／割当可能な未登録候補：{candidates}名。",
+            "役割別には充足可能に見えますが、候補スタッフ数が不足しているため、"
+            "必要な役割を同時に満たすことができません。"
+            f"役割不足合計：{remaining}名／割当可能な未登録候補：{candidates}名。",
             work_date,
             required=remaining,
             possible=candidates,
@@ -307,7 +307,7 @@ def _data_quality_issues(work_date: str, workers: _DayWorkers) -> list[Validatio
                 UNMATCHED_STAFF,
                 VALIDATION_STATUS_WARNING,
                 f"スタッフマスター未登録の清掃スタッフが{workers.unmatched}名います"
-                "（ロール・スキルは不明として判定しています）。",
+                "（役割・スキルは不明として判定しています）。",
                 work_date,
                 actual=workers.unmatched,
             )
@@ -328,13 +328,13 @@ def validate_day(
     staff_by_id: dict[int, StaffInput],
     role_names: dict[int, str],
 ) -> DailyStaffingResult:
-    """1日分を検証する. role_requirements は role_id -> 必要人数（行なしのロールは0）."""
+    """1日分を検証する. role_requirements は role_id -> 必要人数（行なしの役割は0）."""
     workers = _classify(shifts, staff_by_id)
     issues: list[ValidationIssue] = []
 
     actual_roles = {role_id: 0 for role_id in role_names}
     possible_roles = {role_id: 0 for role_id in role_names}
-    flexible = workers.unmatched  # 未登録は任意のロールであり得る
+    flexible = workers.unmatched  # 未登録は任意の役割であり得る
     for role_id in role_names:
         known = sum(1 for s in workers.confirmed_matched if s.role_id == role_id)
         maybe = sum(1 for s in workers.uncertain_matched if s.role_id == role_id)
@@ -346,7 +346,7 @@ def validate_day(
             ValidationIssue(
                 REQUIREMENT_MISSING,
                 VALIDATION_STATUS_WARNING,
-                "この日の必要条件が未設定のため、人数・上限・ロール・スキルを判定できません"
+                "この日の必要条件が未設定のため、人数・上限・役割・スキルを判定できません"
                 "（清掃不要日は最低人数0を登録してください）。",
                 work_date,
             )

@@ -3,6 +3,10 @@
 色に頼らず文字で分かるようにする（モノクロ印刷でも確定/下書き/不足が読めるようにするため）。
 """
 
+from collections.abc import Iterable
+from dataclasses import dataclass
+from datetime import date, timedelta
+
 from src.constants import (
     VALIDATION_STATUS_ERROR,
     VALIDATION_STATUS_INFO,
@@ -20,6 +24,11 @@ OFF_LABEL = "休"
 NO_ROW_LABEL = "-"
 NOT_APPLICABLE = "-"
 DRAFT_NOTICE = "※下書きの日付を含みます"
+# 確定していない日が1日でもあれば、配布用の印刷・Excelは出さない
+NOT_DISTRIBUTABLE_MESSAGE = (
+    "未確定の日が{count}日あります（{dates}）。この勤務表はまだ配布できません。{how}"
+)
+CLEAR_DAYS_LABEL = "人数・役割の不足なし"
 
 # Excelの問題一覧だけで使う内部コード（画面には出さない）
 SEVERITY_LABELS = {
@@ -121,7 +130,7 @@ def format_staff_count(day: ScheduleDayValidationResult) -> str:
 
 
 def format_role(day: ScheduleDayValidationResult, role_id: int) -> str:
-    """ロール別の充足。既存の検証結果表示をそのまま使う."""
+    """役割別の充足。既存の検証結果表示をそのまま使う."""
     if not day.exists or day.staffing is None:
         return NOT_APPLICABLE
     return format_role_cell(day.staffing, role_id)
@@ -131,3 +140,65 @@ def format_skill(day: ScheduleDayValidationResult) -> str:
     if not day.exists or day.staffing is None:
         return NOT_APPLICABLE
     return format_skill_cell(day.staffing)
+
+
+
+# ---------------------------------------------------------------------------
+# 同じ内容の注意を1件にまとめる（14日分の「下書きです」を14行並べない）
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class GroupedIssue:
+    severity: str
+    message: str
+    work_dates: tuple[str, ...]
+
+
+def group_issues(issues: Iterable) -> list[GroupedIssue]:
+    """重大度と内容が同じ注意をまとめる. 重大度（不足→確認→情報）、最初の日付の順."""
+    groups: dict[tuple[str, str], list[str]] = {}
+    for issue in issues:
+        dates = groups.setdefault((issue.severity, issue.message), [])
+        if issue.work_date not in dates:
+            dates.append(issue.work_date)
+    grouped = [
+        GroupedIssue(severity, message, tuple(sorted(dates)))
+        for (severity, message), dates in groups.items()
+    ]
+    return sorted(grouped, key=lambda g: (_SEVERITY_ORDER.get(g.severity, 9), g.work_dates[0]))
+
+
+def _is_consecutive(work_dates: list[str]) -> bool:
+    days = [date.fromisoformat(d) for d in work_dates]
+    return all(b - a == timedelta(days=1) for a, b in zip(days, days[1:]))
+
+
+def format_date_group(work_dates: Iterable[str], limit: int = 6) -> str:
+    """'11/1(日)' / '11/1(日)〜11/14(土)（14日）' / '11/1(日)、11/3(火・祝)（2日）'."""
+    dates = sorted(work_dates)
+    if not dates:
+        return ""
+    if len(dates) == 1:
+        return format_date_short(dates[0])
+    if _is_consecutive(dates):
+        return f"{format_date_short(dates[0])}〜{format_date_short(dates[-1])}（{len(dates)}日）"
+    shown = "、".join(format_date_short(d) for d in dates[:limit])
+    rest = f" ほか{len(dates) - limit}日" if len(dates) > limit else ""
+    return f"{shown}{rest}（{len(dates)}日）"
+
+
+def unconfirmed_dates(validation) -> list[str]:
+    """確定していない日（下書き・未作成）."""
+    return [d.work_date for d in validation.days if not d.is_finalized]
+
+
+def is_distributable(validation) -> bool:
+    """配布用に出してよいか（全日が確定済み）."""
+    return bool(validation.days) and not unconfirmed_dates(validation)
+
+
+def not_distributable_message(validation, how: str) -> str:
+    """'未確定の日が14日あります（11/1(日)〜11/14(土)（14日））。この勤務表はまだ配布できません。' + how."""
+    dates = unconfirmed_dates(validation)
+    return NOT_DISTRIBUTABLE_MESSAGE.format(count=len(dates), dates=format_date_group(dates), how=how)

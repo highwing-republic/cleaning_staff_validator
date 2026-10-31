@@ -250,7 +250,7 @@ def _build_info_sheet(wb: Workbook, export: ScheduleExport, exported_at: str) ->
         ("未作成日数", validation.missing_days),
         ("確定日数", validation.finalized_days),
         ("下書き日数", validation.draft_days),
-        ("問題なし日数", validation.clear_days),
+        ("人数・役割の不足なしの日数", validation.clear_days),
         ("問題あり日数", validation.problem_days),
         ("要件未設定日数", validation.requirement_missing_days),
         ("出力日時", exported_at),

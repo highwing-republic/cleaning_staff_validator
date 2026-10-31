@@ -328,9 +328,9 @@ def validate_daily_requirement(
     req: DailyRequirementInput,
     role_requirements: list[RoleRequirementInput],
 ) -> list[ValidationError]:
-    """日別必要条件（最低人数・最大人数・ロール別・スキル）の検証.
+    """日別必要条件（最低人数・最大人数・役割別・スキル）の検証.
 
-    required_total_staff は最低必要人数であり、ロール別必要人数の合計が
+    required_total_staff は最低必要人数であり、役割別必要人数の合計が
     これを超えても入力エラーにしない（例: 最低5名・LEADER3・CHECKER3 → 6名以上で成立）。
     """
     errors: list[ValidationError] = []
@@ -395,7 +395,7 @@ def validate_daily_requirement(
             )
         )
 
-    # 対象日のロール別必要人数のみ対象
+    # 対象日の役割別必要人数のみ対象
     relevant_roles = [r for r in role_requirements if r.work_date == work_date]
 
     role_count_valid = True
@@ -406,7 +406,7 @@ def validate_daily_requirement(
             errors.append(
                 ValidationError(
                     code=REQUIREMENT_ROLE_REQUIRED_COUNT_INVALID,
-                    message="ロール別必要人数は0以上の整数で入力してください。",
+                    message="役割別必要人数は0以上の整数で入力してください。",
                     work_date=work_date,
                     role_id=role_req.role_id,
                     field_name="required_count",
@@ -420,7 +420,7 @@ def validate_daily_requirement(
             errors.append(
                 ValidationError(
                     code=REQUIREMENT_ROLE_SUM_EXCEEDS_MAX,
-                    message="ロール別必要人数の合計が最大人数を超えています。",
+                    message="役割別必要人数の合計が最大人数を超えています。",
                     work_date=work_date,
                 )
             )
@@ -717,7 +717,7 @@ def validate_period_requirements(
             errors.append(
                 ValidationError(
                     code=REQUIREMENT_ROLE_NOT_FOUND,
-                    message="登録されていないロールが指定されています。",
+                    message="登録されていない役割が指定されています。",
                     work_date=role_req.work_date,
                     role_id=role_req.role_id,
                     field_name="role_id",

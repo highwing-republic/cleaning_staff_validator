@@ -47,7 +47,7 @@ def format_skill_condition(requirement: DailyRequirementInput | None) -> str:
 
 
 def format_role_condition(view: DailyRequirementView, role_id: int) -> str:
-    """ロール別必要人数. 必要数0はそのRole条件なしなので '-' と表示する."""
+    """役割別必要人数. 必要数0はそのRole条件なしなので '-' と表示する."""
     if not view.is_defined:
         return NOT_APPLICABLE
     count = view.role_counts.get(role_id, 0)

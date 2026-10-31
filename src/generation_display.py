@@ -55,7 +55,7 @@ def format_staff_shortage(day: DailyGenerationResult) -> str:
 
 
 def format_role_shortages(day: DailyGenerationResult, role_names: dict[int, str]) -> str:
-    """'リーダー 1名' のように不足しているロールだけ並べる."""
+    """'リーダー 1名' のように不足している役割だけ並べる."""
     if not day.role_shortages:
         return NOT_APPLICABLE
     return " / ".join(

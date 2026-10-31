@@ -106,3 +106,31 @@ def test_staff_page_moves_a_row_with_the_buttons(conn):
     assert list(at.dataframe[0].value["氏名"]) == ["S1", "S3", "S2"]
     at.button(key=f"order_down_{ids[0]}").click().run()
     assert names(conn) == ["S3", "S1", "S2"]
+
+
+def test_staff_page_hides_inactive_staff_and_separates_add_and_edit(conn):
+    """無効の人はふだん隠し、追加と編集はタブで分ける."""
+    keep = add(conn, "1")
+    gone = add(conn, "2")
+    repo.deactivate_staff(conn, gone)
+    at = AppTest.from_file(STAFF_PAGE, default_timeout=30).run()
+    assert [t.label for t in at.tabs] == ["一覧・並び順", "スタッフを追加", "スタッフを編集"]
+    assert list(at.dataframe[0].value["氏名"]) == ["S1"]
+    assert at.selectbox(key="edit_target_staff").options == ["1 S1"]
+    at.toggle[0].set_value(True).run()
+    assert list(at.dataframe[0].value["氏名"]) == ["S1", "S2"]
+    assert keep
+
+
+def test_errors_show_the_staff_name_not_the_id(conn):
+    sid = add(conn, "1", name="山田さん")
+
+    def script(staff_id):
+        from src.models import ValidationError
+        from src.ui_common import show_errors
+
+        show_errors([ValidationError("X", "時刻の形式が正しくありません。", staff_id=staff_id, work_date="2026-11-03")])
+
+    at = AppTest.from_function(script, args=(sid,), default_timeout=30).run()
+    assert not at.exception
+    assert at.error[0].value == "[11月3日(火・祝)／山田さん] 時刻の形式が正しくありません。"

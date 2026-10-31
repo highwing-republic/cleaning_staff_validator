@@ -16,11 +16,13 @@ from src.schedule_output_display import (
     DRAFT_NOTICE,
     STATUS_MISSING_LABEL,
     SEVERITY_TEXTS,
+    format_date_group,
     format_day_state,
     format_required,
     format_schedule_status,
     format_scheduled,
     format_staff_count,
+    group_issues,
 )
 
 APP_NAME = "清掃スタッフ勤務表"
@@ -51,16 +53,17 @@ def _render_shift_cell(value: str) -> str:
 
 
 def _issue_details(export: ScheduleExport) -> str:
-    issues = sorted(export.validation.issues, key=lambda issue: (issue.work_date, issue.severity, issue.code))
-    if not issues:
+    # 同じ内容は日付をまとめて1行にする（14日分の「下書きです」を14行並べない）
+    groups = group_issues(export.validation.issues)
+    if not groups:
         return ""
     rows = "".join(
         "<li>"
-        f"{_e(format_date_short(issue.work_date))}　"
-        f"{_e(SEVERITY_TEXTS.get(issue.severity, issue.severity))}："
-        f"{_e(issue.message)}"
+        f"{_e(format_date_group(group.work_dates))}　"
+        f"{_e(SEVERITY_TEXTS.get(group.severity, group.severity))}："
+        f"{_e(group.message)}"
         "</li>"
-        for issue in issues
+        for group in groups
     )
     return f'<section class="issue-details"><h2>確認が必要な内容</h2><ul>{rows}</ul></section>'
 

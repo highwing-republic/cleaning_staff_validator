@@ -332,7 +332,7 @@ class DailyStaffingResult:
     """1日分の清掃体制の集計と判定.
 
     requirement_defined=False（daily_requirements 行なし）の日は required_* が None で、
-    人数・上限・ロール・スキルは判定しない（0人必要とはみなさない）。
+    人数・上限・役割・スキルは判定しない（0人必要とはみなさない）。
     actual_roles / actual_skill_count は確定値（staff master照合済みの清掃勤務者のみ）、
     possible_* はUNKNOWN勤務・未登録スタッフを含めた最大可能人数。
     """
@@ -856,7 +856,7 @@ class RegenerationPreview:
 class ScheduleDayValidationResult:
     """保存済み勤務表1日分の検証結果.
 
-    schedule_status が None の日は勤務表そのものが未作成で、人数・ロール・スキルは
+    schedule_status が None の日は勤務表そのものが未作成で、人数・役割・スキルは
     判定しない（staffing=None）。必要条件は表示のために保持する。
     staffing は既存の検証エンジン（staffing_validation）の判定結果をそのまま持つ。
     """

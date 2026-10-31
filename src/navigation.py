@@ -1,8 +1,8 @@
 """アプリ名と画面名の定義（画面間の案内文で同じ呼び方を使うため）.
 
 画面名をここに集約することで、「シフト生成」「勤務表調整」などの呼び方が
-画面によってずれないようにする。左メニューの番号は業務の順番を示すもので、
-案内文では番号を付けずに画面名だけを使う（番号が変わっても文が古くならない）。
+画面によってずれないようにする。詳細操作の画面には番号を付けない
+（ホームのかんたん作成の①〜④と番号の意味が重ならないようにするため）。
 """
 
 APP_TITLE = "清掃勤務表作成"
@@ -24,13 +24,13 @@ PAGE_ATTENDANCE_VALIDATION = "勤怠データ検証"
 
 SUPPORT_SUFFIX = "（補助）"
 
-# 各画面の見出し（番号は業務の順番。各ページはここから見出しを取る）
-HEADING_STAFF = f"① {PAGE_STAFF}"
-HEADING_PREFERENCES = f"② {PAGE_PREFERENCES}"
-HEADING_REQUIREMENTS = f"③ {PAGE_REQUIREMENTS}"
-HEADING_GENERATE = f"④ {PAGE_GENERATE}"
-HEADING_SCHEDULE = f"⑤ {PAGE_SCHEDULE}"
-HEADING_OUTPUT = f"⑥ {PAGE_OUTPUT}"
+# 各画面の見出し（各ページはここから見出しを取る）
+HEADING_STAFF = PAGE_STAFF
+HEADING_PREFERENCES = PAGE_PREFERENCES
+HEADING_REQUIREMENTS = PAGE_REQUIREMENTS
+HEADING_GENERATE = PAGE_GENERATE
+HEADING_SCHEDULE = PAGE_SCHEDULE
+HEADING_OUTPUT = PAGE_OUTPUT
 HEADING_ATTENDANCE_IMPORT = f"{PAGE_ATTENDANCE_IMPORT}{SUPPORT_SUFFIX}"
 HEADING_ATTENDANCE_VALIDATION = f"{PAGE_ATTENDANCE_VALIDATION}{SUPPORT_SUFFIX}"
 

@@ -284,7 +284,7 @@ def test_rc01_one_generic_candidate_cannot_fill_two_roles():
     combo = issue(result, sv.ROLE_COMBINATION_SHORTAGE)
     assert combo.severity == "ERROR"
     assert (combo.required, combo.possible) == (2, 1)
-    assert "ロール不足合計：2名" in combo.message
+    assert "役割不足合計：2名" in combo.message
     assert "割当可能な未登録候補：1名" in combo.message
 
 

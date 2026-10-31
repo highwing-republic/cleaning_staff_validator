@@ -80,7 +80,7 @@ summary[2].metric("要件設定済み日数", count_defined(requirement_views))
 summary[3].metric("要件未設定日数", count_undefined(requirement_views))
 st.caption(
     f"対象期間: {dates[0]} 〜 {dates[-1]}。"
-    f"{REQUIREMENT_MISSING_LABEL}の日は人数・ロール・スキルの条件を設定しないため、"
+    f"{REQUIREMENT_MISSING_LABEL}の日は人数・役割・スキルの条件を設定しないため、"
     "0名配置になることがあります。"
 )
 st.caption("期間の前後にある勤務表を連勤の判定に使っています。")
@@ -175,6 +175,16 @@ with st.expander("詳しい情報"):
     # 内部の計算状態は普段見る必要がないため、ここに畳んでおく
     st.caption(f"計算時間 {result.solve_seconds:.2f} 秒 / 計算結果: {result.solver_status}")
 
+# 保存できるかどうかを、結果のすぐ下で先に知らせる（保存ボタンはページの下にある）
+_existing_now = services.get_current_schedule(conn, dates).existing_dates
+if _existing_now:
+    st.info(
+        f"この期間にはすでに勤務表がある日が{len(_existing_now)}日あるため、この画面からは保存しません。"
+        f"作り直す場合は「{PAGE_SCHEDULE}」を使ってください（詳しくはページ下の「保存」）。"
+    )
+else:
+    st.success("この勤務案は保存できます。内容を確認して、ページ下の「勤務案を下書き保存」を押してください。")
+
 for day in result.shortage_days:
     st.warning(
         f"{format_date_short(day.work_date)}: "
@@ -210,7 +220,9 @@ grid = pd.DataFrame(
         for detail in staff_details
     ]
 )
-st.dataframe(grid, width="stretch", hide_index=True)
+st.caption("表は横に動かして確認できます（名前の列は固定しています）。")
+st.dataframe(grid, width="stretch", hide_index=True,
+             column_config={"スタッフ": st.column_config.Column(pinned=True)})
 
 # ---------------------------------------------------------------------------
 # スタッフ別の勤務状況
@@ -252,7 +264,7 @@ daily = pd.DataFrame(
             "最低必要": format_required(day),
             "配置": day.scheduled_staff_count,
             "人数不足": format_staff_shortage(day),
-            "ロール不足": format_role_shortages(day, role_names),
+            "役割不足": format_role_shortages(day, role_names),
             "スキル不足": format_skill_shortage(day),
         }
         for day in result.days

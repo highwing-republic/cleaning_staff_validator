@@ -1,6 +1,6 @@
 """アプリ全体で使用する定数."""
 
-# ロール: 1スタッフ = 1ロール（MVP1）
+# 役割: 1スタッフ = 1役割（MVP1）
 ROLE_LEADER = "LEADER"
 ROLE_CHECKER = "CHECKER"
 ROLE_CLEANER = "CLEANER"
