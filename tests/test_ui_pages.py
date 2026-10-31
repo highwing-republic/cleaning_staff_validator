@@ -224,7 +224,7 @@ def _create_form_submit(at, employee_code, name, skill=None):
     at.text_input[0].input(employee_code)
     at.text_input[1].input(name)
     if skill is not None:
-        at.selectbox[1].select(skill)  # selectbox[0]=ロール, [1]=スキル
+        at.selectbox[1].select(skill)  # selectbox[0]=役割, [1]=スキル
     [b for b in at.button if b.label == "登録"][0].click()
     at.run()
 
@@ -1665,7 +1665,7 @@ def test_generate_page_shows_role_shortage(db_path):
 
     assert any("チェッカー" in w.value for w in at.warning)
     daily = _daily_table(at)
-    assert list(daily["ロール不足"])[0] == "チェッカー 1名"
+    assert list(daily["役割不足"])[0] == "チェッカー 1名"
 
 
 def test_generate_page_shows_skill_shortage(db_path):

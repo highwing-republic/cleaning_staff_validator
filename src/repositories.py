@@ -662,7 +662,7 @@ def list_daily_requirements(
 def list_role_requirements(
     conn: sqlite3.Connection, start_date: str, end_date: str
 ) -> list[RoleRequirementInput]:
-    """期間内のロール別必要人数を日付・role_id昇順で返す."""
+    """期間内の役割別必要人数を日付・role_id昇順で返す."""
     rows = conn.execute(
         "SELECT work_date, role_id, required_count FROM daily_role_requirements "
         "WHERE work_date BETWEEN ? AND ? ORDER BY work_date, role_id",
@@ -697,7 +697,7 @@ def save_daily_requirements(
 
 
 def delete_daily_requirement(conn: sqlite3.Connection, work_date: str) -> None:
-    """その日を要件未設定に戻す. ロール別必要人数も同時に削除する（孤児行を残さない）."""
+    """その日を要件未設定に戻す. 役割別必要人数も同時に削除する（孤児行を残さない）."""
     with conn:
         _delete_requirement_rows(conn, work_date)
 
@@ -743,7 +743,7 @@ def save_period_requirements(
                 _delete_requirement_rows(conn, work_date)
                 continue
             conn.execute(_UPSERT_DAILY_REQUIREMENT_SQL, _daily_requirement_params(req))
-            # ロール条件は日単位で全置換する（画面から外したロールを残さない）
+            # 役割条件は日単位で全置換する（画面から外した役割を残さない）
             conn.execute(
                 "DELETE FROM daily_role_requirements WHERE work_date = ?", (work_date,)
             )
@@ -755,7 +755,7 @@ def save_period_requirements(
 
 
 def get_role_requirements(conn: sqlite3.Connection, year_month: str) -> list[RoleRequirementInput]:
-    """対象月のロール別必要人数（既存の月単位API. 日付範囲版へ委譲する）."""
+    """対象月の役割別必要人数（既存の月単位API. 日付範囲版へ委譲する）."""
     dates = get_month_dates(year_month)
     return list_role_requirements(conn, dates[0], dates[-1])
 

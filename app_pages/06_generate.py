@@ -80,7 +80,7 @@ summary[2].metric("要件設定済み日数", count_defined(requirement_views))
 summary[3].metric("要件未設定日数", count_undefined(requirement_views))
 st.caption(
     f"対象期間: {dates[0]} 〜 {dates[-1]}。"
-    f"{REQUIREMENT_MISSING_LABEL}の日は人数・ロール・スキルの条件を設定しないため、"
+    f"{REQUIREMENT_MISSING_LABEL}の日は人数・役割・スキルの条件を設定しないため、"
     "0名配置になることがあります。"
 )
 st.caption("期間の前後にある勤務表を連勤の判定に使っています。")
@@ -264,7 +264,7 @@ daily = pd.DataFrame(
             "最低必要": format_required(day),
             "配置": day.scheduled_staff_count,
             "人数不足": format_staff_shortage(day),
-            "ロール不足": format_role_shortages(day, role_names),
+            "役割不足": format_role_shortages(day, role_names),
             "スキル不足": format_skill_shortage(day),
         }
         for day in result.days

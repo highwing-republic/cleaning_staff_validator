@@ -145,7 +145,7 @@ def _rewrite_message(
     actual = issue.actual
     if issue.code == REQUIREMENT_MISSING:
         message = (
-            "この日の必要条件が未設定のため、人数・ロール・スキルを判定できません"
+            "この日の必要条件が未設定のため、人数・役割・スキルを判定できません"
             "（清掃不要日は必要人数0を登録してください）。"
         )
     elif required is None or actual is None:
@@ -161,7 +161,7 @@ def _rewrite_message(
             f"（上限：{required}名／勤務予定：{actual}名）。"
         )
     elif issue.code == ROLE_SHORTAGE:
-        label = role_names.get(issue.role_id, "対象ロール")
+        label = role_names.get(issue.role_id, "対象の役割")
         message = (
             f"{label}が{required - actual}名不足しています"
             f"（必要：{required}名／勤務予定：{actual}名）。"
@@ -175,8 +175,8 @@ def _rewrite_message(
         )
     elif issue.code == ROLE_COMBINATION_SHORTAGE:
         message = (
-            "必要なロールを同時に満たせません"
-            "（1人が複数のロールを兼ねることはできないため、勤務予定者が足りていません）。"
+            "必要な役割を同時に満たせません"
+            "（1人が複数の役割を兼ねることはできないため、勤務予定者が足りていません）。"
         )
     else:
         return issue

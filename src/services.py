@@ -192,7 +192,7 @@ def build_attendance_preview(
                 ImportIssue(
                     UNMATCHED_STAFF,
                     f"未登録スタッフ: 従業員番号「{code}」はスタッフマスターにありません"
-                    "（ロール・スキル不明として扱います）。",
+                    "（役割・スキル不明として扱います）。",
                     employee_code=code,
                     employee_name=first.employee_name,
                 )
@@ -1193,7 +1193,7 @@ def validate_current_schedule(
     """保存済み勤務表を検証する（毎回DBから読み直すので手修正が即反映される）.
 
     検証対象は schedule_assignments で、勤怠CSV（attendance_shifts）とは別概念。
-    ロール・スキルはスタッフマスターの現在値を使う。
+    役割・スキルはスタッフマスターの現在値を使う。
     """
     if not work_dates:
         return SchedulePeriodValidationResult(work_dates=[])

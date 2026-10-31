@@ -245,7 +245,7 @@ with tab_list:
                     "従業員番号": d.staff.employee_code,
                     "氏名": d.staff.staff_name,
                     "部門": d.staff.department or "",
-                    "ロール": role_name_by_id.get(d.staff.role_id, d.staff.role_id),
+                    "役割": role_name_by_id.get(d.staff.role_id, d.staff.role_id),
                     "代わりにできる役割": " / ".join(
                         role_name_by_id.get(r, str(r)) for r in d.substitute_role_ids
                     ),
@@ -292,12 +292,12 @@ with tab_list:
 with tab_create:
     with st.form("create_staff_form", clear_on_submit=True):
         # 既存テスト（AppTest）が text_input[0]/[1] と selectbox[0]/[1] を位置で参照するため、
-        # 従業員番号・氏名・ロール・スキルはこの順のまま保つ
+        # 従業員番号・氏名・役割・スキルはこの順のまま保つ
         employee_code = st.text_input("従業員番号")
         name = st.text_input("氏名")
         department = st.text_input("部門", value="清掃")
         role_id = st.selectbox(
-            "ロール", options=role_ids,
+            "役割", options=role_ids,
             index=default_role_index,
             format_func=lambda rid: role_name_by_id.get(rid, str(rid)),
         )
@@ -393,7 +393,7 @@ def _edit_section() -> None:
             "部門", value=target.department or "", key=f"{edit_key}_department"
         )
         edit_role_id = st.selectbox(
-            "ロール",
+            "役割",
             options=role_ids,
             index=role_ids.index(target.role_id),
             format_func=lambda rid: role_name_by_id.get(rid, str(rid)),

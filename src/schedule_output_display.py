@@ -130,7 +130,7 @@ def format_staff_count(day: ScheduleDayValidationResult) -> str:
 
 
 def format_role(day: ScheduleDayValidationResult, role_id: int) -> str:
-    """ロール別の充足。既存の検証結果表示をそのまま使う."""
+    """役割別の充足。既存の検証結果表示をそのまま使う."""
     if not day.exists or day.staffing is None:
         return NOT_APPLICABLE
     return format_role_cell(day.staffing, role_id)

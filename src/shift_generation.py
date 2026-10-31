@@ -510,7 +510,7 @@ def _requirement_missing_issues(days: list[GenerationDay]) -> list[GenerationIss
     return [
         GenerationIssue(
             code=GENERATION_ISSUE_REQUIREMENT_MISSING,
-            message="要件未設定のため人数・ロール・スキルの条件を設定していません。",
+            message="要件未設定のため人数・役割・スキルの条件を設定していません。",
             work_date=day.work_date,
         )
         for day in days
@@ -576,7 +576,7 @@ def _add_requirement_constraints(
         if day.max_total_staff is not None:
             model.Add(sum(working_today) <= day.max_total_staff)
 
-        # ロール別必要人数（1スタッフ1ロール. 代わりにできる役割がある人は、その日どれか1つを受け持つ）
+        # 役割別必要人数（1スタッフ1役割. 代わりにできる役割がある人は、その日どれか1つを受け持つ）
         needed_roles = {r for r, n in day.role_requirements.items() if n > 0}
         acting = _acting_role_terms(model, x, staff_list, day.work_date, needed_roles)
         for role_id, required_count in day.role_requirements.items():
@@ -861,7 +861,7 @@ def _build_daily_results(
             issues.append(
                 GenerationIssue(
                     code=GENERATION_ISSUE_ROLE_SHORTAGE,
-                    message=f"ロールの必要人数に対して{value}名不足しています。",
+                    message=f"役割の必要人数に対して{value}名不足しています。",
                     work_date=work_date,
                     role_id=role_id,
                     shortage=value,
