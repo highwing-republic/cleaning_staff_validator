@@ -9,6 +9,7 @@ import json
 from src import repositories as repo, services
 from src.models import DailyRequirementInput, ScheduleGenerationResult
 from src.period_utils import parse_date, period_dates
+from src.requirement_defaults import DEFAULT_REQUIRED_TOTAL, default_role_requirements
 from src.shift_generation import generate_shift
 
 
@@ -138,8 +139,11 @@ def confirm_inputs(conn, start_date, days):
 
 
 def get_defaults(conn):
+    """平日・土日の基本人数. 未保存なら、ふだんの体制（役割の最低人数の合計）."""
     row = conn.execute("SELECT * FROM guided_defaults WHERE singleton=1").fetchone()
-    return (row["weekday_staff"], row["weekend_staff"]) if row else (6, 5)
+    if row:
+        return row["weekday_staff"], row["weekend_staff"]
+    return DEFAULT_REQUIRED_TOTAL, DEFAULT_REQUIRED_TOTAL
 
 
 def save_defaults(conn, weekday_staff, weekend_staff):
@@ -151,7 +155,11 @@ def save_defaults(conn, weekday_staff, weekend_staff):
 
 
 def save_staff_counts(conn, dates, counts, expected_fingerprint):
-    """簡易入力で変更しないロール・スキル・最大人数などをそのまま保持する。"""
+    """簡易入力で変更しないロール・スキル・最大人数などをそのまま保持する。
+
+    初めて設定する日（要件の行がない日）は、役割の最低人数の初期値
+    （リーダー1名・チェッカー1名・クリーナー5名）も一緒に保存する。
+    """
     with _write(conn):
         if review_fingerprint(conn, dates, "requirements") != expected_fingerprint:
             raise WorkflowError("必要人数が別の画面で変更されました。画面を読み直して確認してください。")
@@ -160,6 +168,11 @@ def save_staff_counts(conn, dates, counts, expected_fingerprint):
                         if view.is_defined else DailyRequirementInput(view.work_date, counts[view.work_date])
                         for view in current]
         roles = repo.list_role_requirements(conn, dates[0], dates[-1])
+        dates_with_roles = {r.work_date for r in roles}
+        role_master = repo.list_roles(conn)
+        for view in current:
+            if not view.is_defined and view.work_date not in dates_with_roles:
+                roles.extend(default_role_requirements(view.work_date, role_master))
         errors = services.save_period_requirements(conn, dates, requirements, roles)
         if errors:
             raise WorkflowError("\n".join(e.message for e in errors))

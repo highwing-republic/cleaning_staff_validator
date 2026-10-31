@@ -700,15 +700,56 @@ def test_requirements_page_edits_whole_period_without_navigation(db_path):
         assert at.number_input(key=f"req_{work_date}_required") is not None
 
 
-def test_requirements_unset_days_create_no_rows(db_path):
-    """設定をONにしない日は要件未設定のまま（行を作らない）."""
+def test_requirements_unset_days_start_with_the_usual_crew(db_path):
+    """まだ設定していない日は、最低7名（リーダー1・チェッカー1・クリーナー5）を初期値として入れてある."""
+    at = _open_requirement_page()
+    target = _requirement_dates(at)[0]
+    assert at.checkbox(key=f"req_{target}_defined").value is True
+    assert at.number_input(key=f"req_{target}_required").value == 7
+    assert at.number_input(key=f"req_{target}_role_{LEADER}").value == 1
+    assert at.number_input(key=f"req_{target}_role_{CHECKER}").value == 1
+    assert at.number_input(key=f"req_{target}_role_{CLEANER}").value == 5
+    assert any("リーダー1名・チェッカー1名・クリーナー5名" in c.value for c in at.caption)
+
+
+def test_requirements_saving_without_changes_saves_the_defaults(db_path):
     at = _open_requirement_page()
     dates = _requirement_dates(at)
     _save_requirements(at)
 
     conn = get_connection(str(db_path))
+    saved = repo.list_daily_requirements(conn, dates[0], dates[-1])
+    roles = repo.list_role_requirements(conn, dates[0], dates[0])
+    conn.close()
+    assert [r.work_date for r in saved] == dates
+    assert {r.required_total_staff for r in saved} == {7}
+    assert {r.role_id: r.required_count for r in roles} == {LEADER: 1, CHECKER: 1, CLEANER: 5}
+
+
+def test_requirements_unticked_days_create_no_rows(db_path):
+    """「設定」を外した日は要件未設定のまま（行を作らない）."""
+    at = _open_requirement_page()
+    dates = _requirement_dates(at)
+    for work_date in dates:
+        at.checkbox(key=f"req_{work_date}_defined").uncheck()
+    _save_requirements(at)
+
+    conn = get_connection(str(db_path))
     assert repo.list_daily_requirements(conn, dates[0], dates[-1]) == []
     conn.close()
+
+
+def test_requirements_saved_values_are_not_replaced_by_defaults(db_path):
+    """保存済みの日は、保存した値のまま表示する（初期値で上書きしない）."""
+    at = _open_requirement_page()
+    target = _requirement_dates(at)[0]
+    at.number_input(key=f"req_{target}_required").set_value(4)
+    at.number_input(key=f"req_{target}_role_{CLEANER}").set_value(2)
+    _save_requirements(at)
+
+    at = _open_requirement_page()
+    assert at.number_input(key=f"req_{target}_required").value == 4
+    assert at.number_input(key=f"req_{target}_role_{CLEANER}").value == 2
 
 
 def test_requirements_saves_reserved_rooms_and_required_staff(db_path):
@@ -773,10 +814,10 @@ def test_requirements_saves_max_total_staff(db_path):
     target = _requirement_dates(at)[4]
     at.checkbox(key=f"req_{target}_defined").check()
     at.number_input(key=f"req_{target}_required").set_value(3)
-    at.number_input(key=f"req_{target}_max").set_value(6)
+    at.number_input(key=f"req_{target}_max").set_value(8)  # 役割の最低人数の初期値（計7名）以上
     _save_requirements(at)
 
-    assert _saved_requirement(db_path, target).max_total_staff == 6
+    assert _saved_requirement(db_path, target).max_total_staff == 8
 
 
 def test_requirements_required_zero_is_a_defined_requirement(db_path):
@@ -833,6 +874,8 @@ def test_requirements_saves_whole_period_at_once(db_path):
         at.checkbox(key=f"req_{work_date}_defined").check()
         at.number_input(key=f"req_{work_date}_reserved").set_value(index + 1)
         at.number_input(key=f"req_{work_date}_required").set_value(index)
+    for work_date in dates[5:]:
+        at.checkbox(key=f"req_{work_date}_defined").uncheck()
     _save_requirements(at)
 
     conn = get_connection(str(db_path))
@@ -848,6 +891,8 @@ def test_requirements_summary_counts_defined_and_undefined(db_path):
     at.checkbox(key=f"req_{target}_defined").check()
     at.number_input(key=f"req_{target}_reserved").set_value(8)
     at.number_input(key=f"req_{target}_required").set_value(4)
+    for work_date in _requirement_dates(at)[1:]:
+        at.checkbox(key=f"req_{work_date}_defined").uncheck()
     _save_requirements(at)
 
     metrics = {m.label: m.value for m in at.metric}
@@ -861,6 +906,7 @@ def test_requirements_overview_distinguishes_undefined_days(db_path):
     target = _requirement_dates(at)[0]
     at.checkbox(key=f"req_{target}_defined").check()
     at.number_input(key=f"req_{target}_required").set_value(0)
+    at.checkbox(key=f"req_{_requirement_dates(at)[1]}_defined").uncheck()
     _save_requirements(at)
 
     table = at.dataframe[0].value

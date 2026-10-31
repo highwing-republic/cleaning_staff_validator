@@ -21,6 +21,11 @@ from src.navigation import (
     PAGE_REQUIREMENTS,
 )
 from src.period_utils import format_date_short, period_dates
+from src.requirement_defaults import (
+    DEFAULT_REQUIRED_TOTAL,
+    default_role_counts,
+    describe_default_roles,
+)
 from src.requirement_display import (
     REQUIREMENT_UNDEFINED_LABEL,
     count_defined,
@@ -58,6 +63,7 @@ start_date, days = select_period("requirement_period")
 dates = period_dates(start_date, days)
 
 roles = repo.list_roles(conn)
+initial_role_counts = default_role_counts(roles)
 views = services.get_period_requirements(conn, dates)
 view_by_date = {v.work_date: v for v in views}
 
@@ -105,6 +111,10 @@ st.dataframe(overview, width="stretch", hide_index=True)
 
 st.subheader("入力")
 st.caption(
+    f"まだ設定していない日には、ふだんの体制（最低{DEFAULT_REQUIRED_TOTAL}名："
+    f"{describe_default_roles(roles)}）を初期値として入れてあります。変わる日だけ直して保存してください。"
+)
+st.caption(
     "「設定」を外した日は他の入力値を保存しません（要件未設定として行を削除します）。"
     "予約室数・最大人数・必要スキルLvは空欄にできます（空欄＝未設定、0＝0室/0名）。"
 )
@@ -142,8 +152,9 @@ def _day_inputs(work_date: str) -> tuple[DailyRequirementInput | None, list[Role
     with label_col:
         st.markdown(f"**{format_date_short(work_date)}**")
     with defined_col:
+        # まだ設定していない日も、初期値を入れた状態で「設定」をオンにしておく
         defined = st.checkbox(
-            "設定", value=view.is_defined, key=f"{prefix}_defined",
+            "設定", value=True, key=f"{prefix}_defined",
             help="外すとこの日は要件未設定になります（必要人数0とは別です）。",
         )
     with rooms_col:
@@ -162,7 +173,7 @@ def _day_inputs(work_date: str) -> tuple[DailyRequirementInput | None, list[Role
             required_total_staff = st.number_input(
                 "最低必要人数",
                 min_value=0,
-                value=req.required_total_staff if req else 0,
+                value=req.required_total_staff if req else DEFAULT_REQUIRED_TOTAL,
                 step=1,
                 key=f"{prefix}_required",
                 label_visibility="collapsed",
@@ -186,7 +197,11 @@ def _day_inputs(work_date: str) -> tuple[DailyRequirementInput | None, list[Role
                     st.number_input(
                         role["role_name"],
                         min_value=0,
-                        value=view.role_counts.get(role["role_id"], 0),
+                        value=(
+                            view.role_counts.get(role["role_id"], 0)
+                            if view.is_defined
+                            else initial_role_counts[role["role_id"]]
+                        ),
                         step=1,
                         key=f"{prefix}_role_{role['role_id']}",
                         label_visibility="collapsed",

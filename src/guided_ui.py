@@ -15,6 +15,7 @@ from src.daily_count_rows import (
 )
 from src.period_utils import default_period_start, format_date_short, format_period, period_dates
 from src.preference_entry import render_preference_entry
+from src.requirement_defaults import describe_default_roles
 from src.schedule_print import build_schedule_print_html
 
 
@@ -163,7 +164,10 @@ def _inputs(conn, start, days, dates):
         for i, view in enumerate(views):
             initial = view.requirement.required_total_staff if view.is_defined else (weekend if date.fromisoformat(view.work_date).weekday() >= 5 else weekday)
             counts[view.work_date] = columns[i % 2].number_input(format_date_short(view.work_date) + " 最低人数", min_value=0, value=initial, step=1, key=f"gw_count_{view.work_date}")
-        st.caption("保存済みの予約室数・最大人数・役割やスキルの条件は維持されます。変更は左メニューの詳細操作から行えます。")
+        st.caption(
+            f"初めて設定する日は、役割の最低人数（{describe_default_roles(repo.list_roles(conn))}）も一緒に設定します。"
+            "保存済みの予約室数・最大人数・役割やスキルの条件は維持されます。変更は左メニューの詳細操作から行えます。"
+        )
         confirmed = st.checkbox("休みの希望を確認しました（特別な希望がなくてもチェックしてください）", key="gw_checked_preferences")
         submitted = st.form_submit_button("人数を保存して次へ", type="primary")
     if submitted:
