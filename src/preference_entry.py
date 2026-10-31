@@ -14,6 +14,7 @@ import streamlit as st
 
 from src import repositories as repo
 from src import services
+from src.coverage_check import absence_warning, load_coverage_input
 from src.models import StaffDatePreferenceInput, StaffDayCondition, StaffDetail
 from src.period_utils import format_date_short
 from src.time_select import time_select
@@ -235,6 +236,11 @@ def _entry_form(
         horizontal=True,
         key=f"{prefix}_off",
     )
+
+    if off_choice == OFF_ABSOLUTE and not (existing and existing.absolute_off):
+        warning = absence_warning(load_coverage_input(conn, dates), staff_id, work_date)
+        if warning:
+            st.warning(warning + "保存はできます。勤務表では不足として表示されます。")
 
     available_extra = False
     start_time = end_time = None
