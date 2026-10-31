@@ -135,7 +135,7 @@ def test_roles_for_total_keeps_roles_of_an_unsaved_day_with_role_rows():
 # 画面（AppTest）
 # ---------------------------------------------------------------------------
 
-PAGE = str(Path(__file__).resolve().parents[1] / "pages" / "03_requirements.py")
+PAGE = str(Path(__file__).resolve().parents[1] / "app_pages" / "03_requirements.py")
 START = "2026-11-14"
 DATES = period_dates(START, 14)
 

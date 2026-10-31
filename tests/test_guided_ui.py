@@ -133,14 +133,14 @@ def test_completed_period_can_be_reopened_for_print(db):
 
 def test_period_follows_guided_flow_to_detailed_pages(db):
     at = start(AppTest.from_file(APP, default_timeout=45).run())
-    at.switch_page("pages/03_requirements.py").run()
+    at.switch_page("app_pages/03_requirements.py").run()
     assert not at.exception
     assert at.date_input[0].value == date.fromisoformat(START)
     assert at.selectbox(key="requirement_period_days").value == 10
     at.date_input[0].set_value(date(2026, 11, 5)).run()
-    at.switch_page("pages/08_output.py").run()
+    at.switch_page("app_pages/08_output.py").run()
     assert not at.exception
     assert at.date_input[0].value == date(2026, 11, 5)
-    at.switch_page("pages/03_requirements.py").run()
+    at.switch_page("app_pages/03_requirements.py").run()
     assert not at.exception
     assert at.date_input[0].value == date(2026, 11, 5)

@@ -191,7 +191,7 @@ def test_coverage_check_explains_competition_between_roles(conn):
 # スタッフ管理の画面
 # ---------------------------------------------------------------------------
 
-STAFF_PAGE = str(Path(__file__).resolve().parents[1] / "pages" / "01_staff.py")
+STAFF_PAGE = str(Path(__file__).resolve().parents[1] / "app_pages" / "01_staff.py")
 
 
 def test_staff_page_saves_substitute_roles(conn):

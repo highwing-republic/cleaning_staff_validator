@@ -96,6 +96,12 @@ def open_connection() -> sqlite3.Connection:
     sqlite3の接続はStreamlitのスレッド間で共有してはいけないため、
     st.cache_resourceは使わずスクリプト実行のたびに新しい接続を作る。
     """
+    # 念のため、パスワード確認を通っていない画面ではデータを開かない（app.py を通らずに開かれた場合の保険）
+    from src import access_gate
+
+    if not access_gate.is_authorized():
+        st.warning("パスワードを入力してから開いてください。")
+        st.stop()
     db_path = os.environ.get(DB_PATH_ENV) or None
     conn = get_connection(db_path)
     initialize_database(conn)

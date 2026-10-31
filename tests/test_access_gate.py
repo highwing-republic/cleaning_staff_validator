@@ -53,7 +53,7 @@ def test_with_password_nothing_is_shown_until_it_is_entered(db):
     assert at.text_input(key="access_password_input")
     # ログイン画面しか登録されないので、ほかの画面へは移れない（URLを直接開いてもログイン画面になる）
     with pytest.raises(ValueError):
-        at.switch_page("pages/01_staff.py")
+        at.switch_page("app_pages/01_staff.py")
     assert not at.dataframe
 
 
@@ -71,7 +71,7 @@ def test_right_password_opens_the_app(db):
     at.button[0].click().run()
     assert not at.exception
     assert HOME_BUTTON in buttons(at)
-    at.switch_page("pages/01_staff.py").run()
+    at.switch_page("app_pages/01_staff.py").run()
     assert "実在さん" in list(at.dataframe[0].value["氏名"])
 
 
@@ -88,3 +88,21 @@ def test_changing_the_password_asks_again(db):
 def test_env_password_is_used(monkeypatch):
     monkeypatch.setenv(access_gate.ENV_KEY, " pw ")
     assert access_gate.configured_password() == "pw"
+
+
+def test_page_files_are_not_auto_discovered():
+    """画面のフォルダを pages にしない（Streamlit が自動で読み込み、パスワード確認を通らずに開けてしまう）."""
+    root = Path(APP).parent
+    assert not (root / "pages").exists()
+    assert (root / "app_pages" / "01_staff.py").exists()
+
+
+def test_a_page_opened_directly_shows_no_data(db):
+    """app.py を通らずに画面を直接開いても、パスワード未入力ならデータを開かない."""
+    page = str(Path(APP).parent / "app_pages" / "01_staff.py")
+    at = AppTest.from_file(page, default_timeout=30)
+    at.secrets["access"] = {"password": "合言葉"}
+    at.run()
+    assert not at.exception
+    assert not at.dataframe
+    assert any("パスワードを入力してから" in w.value for w in at.warning)

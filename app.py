@@ -142,7 +142,7 @@ def home() -> None:
         if not services.get_home_status(conn, period_dates(default_period_start(), PERIOD_DEFAULT_DAYS)).has_staff:
             st.info("スタッフがまだ登録されていません。初回だけ「スタッフ管理」で通常の曜日・勤務時間を登録してください。")
             if st.button("スタッフ設定を開く"):
-                st.switch_page("pages/01_staff.py")
+                st.switch_page("app_pages/01_staff.py")
         with st.expander("登録状況・詳しい操作を確認する"):
             _show_status()
             st.caption(
