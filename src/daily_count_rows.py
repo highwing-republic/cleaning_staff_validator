@@ -22,7 +22,7 @@ NOT_CREATED = "未作成"
 NOT_SET = "未設定"
 
 # 文字色も指定する（暗い表示設定でも読めるように）
-SUMMARY_STYLE = "background-color: #eef1f5; color: #1f2933"
+SUMMARY_STYLE = "background-color: #e8f1f6; color: #2b3440"  # 見た目（くすんだ青）に合わせた薄い青
 SHORTAGE_STYLE = "background-color: #fde2e1; color: #8a1c1c"
 EXCESS_STYLE = "background-color: #fff3cd; color: #6b4e00"
 
