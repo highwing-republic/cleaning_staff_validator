@@ -6,6 +6,7 @@ import pandas as pd
 import streamlit as st
 
 from src import guided_workflow as workflow, repositories as repo, services
+from src.coverage_check import analyze_coverage, describe_problems, explain_shortage, problem_days
 from src.daily_count_rows import (
     STAFF_COLUMN,
     build_schedule_table,
@@ -138,6 +139,7 @@ def _inputs(conn, start, days, dates):
         on_saved=_flash,
         empty_message="特別な希望は登録されていません。変更がなければ、下の必要人数を確認して進めます。",
     )
+    _coverage_section(conn, dates)
 
     st.markdown("**最低何人必要ですか？**")
     st.caption("必要に応じてこの人数より多く配置します。予約室数から人数を自動計算することはありません。")
@@ -182,6 +184,24 @@ def _inputs(conn, start, days, dates):
             st.rerun()
 
 
+def _coverage_section(conn, dates):
+    """体制チェック: 出られる人が必要人数に届かない日（どう作っても足りない日）を、理由と一緒に知らせる."""
+    days = problem_days(analyze_coverage(conn, dates))
+    if not days:
+        st.success("体制チェック：どの日も、出られる人が必要人数を満たしています。")
+        return
+    with st.container(border=True):
+        st.markdown(f"**体制チェック：このままでは足りなくなる日（{len(days)}日）**")
+        st.caption(
+            "出られる人（普段の勤務曜日で「必ず休み」でない人）が、必要人数より少ない日です。"
+            "勤務表をどう作っても足りません。休みの希望・必要人数・「普段休みの日に勤務できる」を見直してください。"
+        )
+        for day in days:
+            st.markdown(f"- **{format_date_short(day.work_date)}**　" + "／".join(describe_problems(day)))
+        if any(day.uses_defaults for day in days):
+            st.caption("必要人数をまだ保存していない日は、初期値で判定しています。")
+
+
 def _show_schedule_table(rows, dates, counts):
     """勤務表を、先頭に日ごとの出勤人数・必要人数を付けて表示する（不足は赤、多すぎは黄色）."""
     table = build_schedule_table(rows, dates, counts, format_date_short)
@@ -215,6 +235,8 @@ def _schedule(conn, start, days, dates):
         st.session_state["_guided_step"] = 2
         st.rerun()
     complete = len(current.finalized_dates) == len(dates)
+    if not complete:
+        _coverage_section(conn, dates)
     label = "手直しを残して作り直す" if current.existing_dates else "勤務表をつくる"
     if st.button(label, type="primary", disabled=complete):
         with st.spinner("休みの希望と勤務日数を確認して作成しています…"):
@@ -229,8 +251,11 @@ def _schedule(conn, start, days, dates):
             rows.append({"スタッフ": summary.staff_name, **{format_date_short(d): cells[d] for d in dates}, "勤務日数": summary.scheduled_days})
         maximums = {r.work_date: r.max_total_staff for r in repo.list_daily_requirements(conn, dates[0], dates[-1])}
         _show_schedule_table(rows, dates, counts_from_generation(result, maximums))
-        for day in result.shortage_days:
-            st.warning(f"{format_date_short(day.work_date)}：人数 {day.staff_shortage}人不足／役割 {sum(day.role_shortages.values())}人不足／スキル {day.skill_shortage}人不足（同じ人の不足が重なる場合があります）")
+        if result.shortage_days:
+            coverage = {c.work_date: c for c in analyze_coverage(conn, dates)}
+            role_names = {r["role_id"]: r["role_name"] for r in repo.list_roles(conn)}
+            for day in result.shortage_days:
+                st.warning(explain_shortage(day, coverage.get(day.work_date), role_names))
         changes = []
         for a in result.assignments:
             view = current.day(a.work_date)

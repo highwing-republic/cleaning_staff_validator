@@ -32,6 +32,7 @@ from src.ui_common import (
     open_connection,
 )
 from src.count_select import count_select
+from src.coverage_check import staff_setting_warnings
 from src.period_utils import PERIOD_MAX_DAYS
 from src.time_select import time_select
 from src.work_time import format_standard_work_time
@@ -203,6 +204,16 @@ if staff_details:
         ]
     )
     st.dataframe(table, width="stretch", hide_index=True)
+    setting_warnings = [
+        (d.staff.staff_name, warning)
+        for d in staff_details
+        if d.staff.active
+        for warning in staff_setting_warnings(d)
+    ]
+    if setting_warnings:
+        with st.expander(f"設定を確認してください（{len(setting_warnings)}件）", expanded=True):
+            for name, warning in setting_warnings:
+                st.markdown(f"- **{name}**：{warning}")
 else:
     st.info(
         "スタッフがまだ登録されていません。"
@@ -300,6 +311,8 @@ edit_target = st.selectbox(
 )
 detail = repo.get_staff_detail(conn, edit_target)
 target = detail.staff
+for warning in staff_setting_warnings(detail):
+    st.warning(warning)
 # 入力欄の key はスタッフごとに分ける。共通の key だと、別のスタッフを選び直しても
 # 前に選んだ人の値が入力欄に残り、そのまま「更新」すると選んだ人に前の人の内容を書いてしまう
 edit_key = f"edit_{edit_target}"
