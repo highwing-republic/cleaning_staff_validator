@@ -179,6 +179,19 @@ def initialize_database(conn: sqlite3.Connection) -> None:
             """
         )
 
+        # 代わりにできる役割（自分の役割のほかに、足りない日に受け持てる役割）。1日に受け持つのは1つ
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS staff_substitute_roles (
+                staff_id INTEGER NOT NULL,
+                role_id INTEGER NOT NULL,
+                PRIMARY KEY (staff_id, role_id),
+                FOREIGN KEY (staff_id) REFERENCES staff (staff_id),
+                FOREIGN KEY (role_id) REFERENCES roles (role_id)
+            )
+            """
+        )
+
         # 通常勤務曜日。曜日をstaffの文字列1列に持たせない（Solverで扱えるよう行で持つ）。
         # Phase 5では曜日別の勤務時刻は持たず、勤務時刻は staff.standard_* を使う
         conn.execute(

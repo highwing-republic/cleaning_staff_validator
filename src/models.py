@@ -80,6 +80,8 @@ class StaffDetail:
     staff: StaffInput
     weekdays: tuple[int, ...] = ()
     special_skill_ids: tuple[int, ...] = ()
+    # 代わりにできる役割（自分の役割は含めない）. 1日に受け持つ役割は1つ
+    substitute_role_ids: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -424,6 +426,8 @@ class GenerationStaff:
     max_consecutive_days: int | None = None
     # 週に何日程度勤務したいか（Noneなら目標なし）. Hard Constraintではない
     target_days_per_week: int | None = None
+    # 代わりにできる役割（自分の役割は含めない）. 1日に受け持つ役割は1つ
+    substitute_role_ids: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
