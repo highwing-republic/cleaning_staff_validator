@@ -20,6 +20,7 @@ from src.models import (
 )
 from src.month_utils import get_month_dates
 from src.period_utils import format_date_short
+from src.time_select import UNSET_HOUR
 from src.ui_common import DB_PATH_ENV
 
 YM = "2026-10"
@@ -336,9 +337,35 @@ def test_staff_page_time_dropdown_is_hourly_with_optional_half_hour(db_path):
     assert "9時" in hours and "10時" in hours
     assert "9時30分" not in hours
     assert minutes == ["00分", "30分"]
-    # 何も選ばなければ未設定・00分
-    assert at.selectbox(key="create_start_hour").value is None
+    # 新規登録の初期値は、多くの人と同じ 9:00〜15:30
+    assert at.selectbox(key="create_start_hour").value == 9
     assert at.selectbox(key="create_start_minute").value == "00"
+    assert at.selectbox(key="create_end_hour").value == 15
+    assert at.selectbox(key="create_end_minute").value == "30"
+
+
+def _clear_time(at, key):
+    """時刻のプルダウンで「時」を「未設定」にする."""
+    at.selectbox(key=f"{key}_hour").set_value(UNSET_HOUR)  # フォームの中なので、登録ボタンを押すまで run しない
+
+
+def test_new_staff_defaults_to_cleaner_and_usual_hours(db_path):
+    """何も変えずに登録すると、ロールはクリーナー・通常勤務時間は 9:00〜15:30. 曜日は空欄のまま."""
+    at = _open_staff_page()
+    assert at.selectbox[0].value == CLEANER
+    at.text_input[0].input("0030")
+    at.text_input[1].input("初期値さん")
+    [b for b in at.button if b.label == "登録"][0].click()
+    at.run()
+    assert not at.exception
+
+    conn = get_connection(str(db_path))
+    created = repo.get_staff_by_employee_code(conn, "0030")
+    detail = repo.get_staff_detail(conn, created.staff_id)
+    conn.close()
+    assert created.role_id == CLEANER
+    assert (created.standard_start_time, created.standard_end_time) == ("09:00", "15:30")
+    assert detail.weekdays == ()
 
 
 def test_staff_page_shows_work_volume_inputs(db_path):
@@ -447,6 +474,7 @@ def test_staff_page_rejects_start_time_only(db_path):
     at.text_input[0].input("0010")
     at.text_input[1].input("Dさん")
     _set_time(at, "create_start", 9)
+    _clear_time(at, "create_end")
     [b for b in at.button if b.label == "登録"][0].click()
     at.run()
     assert not at.exception
@@ -462,6 +490,8 @@ def test_staff_page_allows_creation_without_standard_conditions(db_path):
     at = _open_staff_page()
     at.text_input[0].input("0011")
     at.text_input[1].input("Eさん")
+    _clear_time(at, "create_start")
+    _clear_time(at, "create_end")
     [b for b in at.button if b.label == "登録"][0].click()
     at.run()
     assert not at.exception

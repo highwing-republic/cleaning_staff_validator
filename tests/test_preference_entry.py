@@ -318,7 +318,7 @@ def test_staff_without_normal_hours_gets_a_warning(db):
     at = open_step2()
     prefix = choose(at, ids["no_time"], DAY)
     assert any("通常勤務時間が未設定" in w.value for w in at.warning)
-    assert at.selectbox(key=f"{prefix}_start_hour").value is None
+    assert at.selectbox(key=f"{prefix}_start_hour").value == ""  # 未設定
 
 
 def test_switching_day_does_not_carry_unsaved_input(db):
