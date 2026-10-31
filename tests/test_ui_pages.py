@@ -4,6 +4,7 @@ streamlit.testing.v1.AppTest でページを実行し、例外なくレンダリ
 主要な操作（スタッフ登録・更新など）が動くことを確認する。ピクセル単位の検証は行わない。
 """
 
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -733,13 +734,17 @@ def test_requirements_page_edits_whole_period_without_navigation(db_path):
 def test_requirements_unset_days_start_with_the_usual_crew(db_path):
     """まだ設定していない日は、最低7名（リーダー1・チェッカー1・クリーナー5）を初期値として入れてある."""
     at = _open_requirement_page()
-    target = _requirement_dates(at)[0]
-    assert at.checkbox(key=f"req_{target}_defined").value is True
-    assert at.number_input(key=f"req_{target}_required").value == 7
-    assert at.number_input(key=f"req_{target}_role_{LEADER}").value == 1
-    assert at.number_input(key=f"req_{target}_role_{CHECKER}").value == 1
-    assert at.number_input(key=f"req_{target}_role_{CLEANER}").value == 5
-    assert any("リーダー1名・チェッカー1名・クリーナー5名" in c.value for c in at.caption)
+    dates = _requirement_dates(at)
+    weekday = next(d for d in dates if date.fromisoformat(d).weekday() < 5)
+    weekend = next(d for d in dates if date.fromisoformat(d).weekday() >= 5)
+    assert at.checkbox(key=f"req_{weekday}_defined").value is True
+    assert at.number_input(key=f"req_{weekday}_required").value == 7
+    assert at.number_input(key=f"req_{weekday}_role_{LEADER}").value == 1
+    assert at.number_input(key=f"req_{weekday}_role_{CHECKER}").value == 1
+    assert at.number_input(key=f"req_{weekday}_role_{CLEANER}").value == 5
+    assert at.number_input(key=f"req_{weekend}_required").value == 6
+    assert at.number_input(key=f"req_{weekend}_role_{CLEANER}").value == 4
+    assert any("土日 計6名" in c.value for c in at.caption)
 
 
 def test_requirements_saving_without_changes_saves_the_defaults(db_path):
@@ -749,11 +754,15 @@ def test_requirements_saving_without_changes_saves_the_defaults(db_path):
 
     conn = get_connection(str(db_path))
     saved = repo.list_daily_requirements(conn, dates[0], dates[-1])
-    roles = repo.list_role_requirements(conn, dates[0], dates[0])
+    roles = repo.list_role_requirements(conn, dates[0], dates[-1])
     conn.close()
     assert [r.work_date for r in saved] == dates
-    assert {r.required_total_staff for r in saved} == {7}
-    assert {r.role_id: r.required_count for r in roles} == {LEADER: 1, CHECKER: 1, CLEANER: 5}
+    weekend = {d for d in dates if date.fromisoformat(d).weekday() >= 5}
+    assert weekend  # 14日なら土日を含む
+    for r in saved:  # 平日7名・土日6名
+        assert r.required_total_staff == (6 if r.work_date in weekend else 7)
+    cleaners = {r.work_date: r.required_count for r in roles if r.role_id == CLEANER}
+    assert all(cleaners[d] == (4 if d in weekend else 5) for d in dates)
 
 
 def test_requirements_unticked_days_create_no_rows(db_path):

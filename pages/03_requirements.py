@@ -22,9 +22,9 @@ from src.navigation import (
 )
 from src.period_utils import format_date_short, period_dates
 from src.requirement_defaults import (
-    DEFAULT_REQUIRED_TOTAL,
     default_role_counts,
     describe_default_roles,
+    required_total_for,
 )
 from src.requirement_display import (
     REQUIREMENT_UNDEFINED_LABEL,
@@ -63,7 +63,6 @@ start_date, days = select_period("requirement_period")
 dates = period_dates(start_date, days)
 
 roles = repo.list_roles(conn)
-initial_role_counts = default_role_counts(roles)
 views = services.get_period_requirements(conn, dates)
 view_by_date = {v.work_date: v for v in views}
 
@@ -111,8 +110,8 @@ st.dataframe(overview, width="stretch", hide_index=True)
 
 st.subheader("入力")
 st.caption(
-    f"まだ設定していない日には、ふだんの体制（最低{DEFAULT_REQUIRED_TOTAL}名："
-    f"{describe_default_roles(roles)}）を初期値として入れてあります。変わる日だけ直して保存してください。"
+    f"まだ設定していない日には、ふだんの体制（{describe_default_roles(roles)}）を"
+    "初期値として入れてあります。変わる日だけ直して保存してください。"
 )
 st.caption(
     "「設定」を外した日は他の入力値を保存しません（要件未設定として行を削除します）。"
@@ -144,6 +143,7 @@ def _day_inputs(work_date: str) -> tuple[DailyRequirementInput | None, list[Role
     view = view_by_date[work_date]
     req = view.requirement
     prefix = f"req_{work_date}"
+    initial_role_counts = default_role_counts(work_date, roles)  # 平日・土日で違う
 
     label_col, defined_col, rooms_col, staff_col, role_col, skill_col, note_col = st.columns(
         [1.2, 0.8, 1.0, 1.6, 2.2, 1.8, 1.6]
@@ -173,7 +173,7 @@ def _day_inputs(work_date: str) -> tuple[DailyRequirementInput | None, list[Role
             required_total_staff = st.number_input(
                 "最低必要人数",
                 min_value=0,
-                value=req.required_total_staff if req else DEFAULT_REQUIRED_TOTAL,
+                value=req.required_total_staff if req else required_total_for(work_date),
                 step=1,
                 key=f"{prefix}_required",
                 label_visibility="collapsed",

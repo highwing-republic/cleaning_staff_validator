@@ -9,7 +9,11 @@ import json
 from src import repositories as repo, services
 from src.models import DailyRequirementInput, ScheduleGenerationResult
 from src.period_utils import parse_date, period_dates
-from src.requirement_defaults import DEFAULT_REQUIRED_TOTAL, default_role_requirements
+from src.requirement_defaults import (
+    WEEKDAY_REQUIRED_TOTAL,
+    WEEKEND_REQUIRED_TOTAL,
+    default_role_requirements,
+)
 from src.shift_generation import generate_shift
 
 
@@ -143,7 +147,7 @@ def get_defaults(conn):
     row = conn.execute("SELECT * FROM guided_defaults WHERE singleton=1").fetchone()
     if row:
         return row["weekday_staff"], row["weekend_staff"]
-    return DEFAULT_REQUIRED_TOTAL, DEFAULT_REQUIRED_TOTAL
+    return WEEKDAY_REQUIRED_TOTAL, WEEKEND_REQUIRED_TOTAL
 
 
 def save_defaults(conn, weekday_staff, weekend_staff):
@@ -158,7 +162,7 @@ def save_staff_counts(conn, dates, counts, expected_fingerprint):
     """簡易入力で変更しないロール・スキル・最大人数などをそのまま保持する。
 
     初めて設定する日（要件の行がない日）は、役割の最低人数の初期値
-    （リーダー1名・チェッカー1名・クリーナー5名）も一緒に保存する。
+    （平日はクリーナー5名、土日は4名。リーダー・チェッカーは各1名）も一緒に保存する。
     """
     with _write(conn):
         if review_fingerprint(conn, dates, "requirements") != expected_fingerprint:
