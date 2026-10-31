@@ -160,3 +160,29 @@ def test_step4_does_not_offer_distribution_before_finalizing(db):
     at.checkbox(key="gw_output_draft_ok").check().run()
     assert len(at.get("iframe")) == 1
     assert any(b.label == "下書きのExcelをダウンロード" for b in at.download_button)
+
+
+def test_coverage_check_follows_the_numbers_being_typed(db):
+    """②で人数を変えたら、保存する前でも体制チェックがその人数で判定し直す（99人→不足、戻すと解消）."""
+    conn = get_connection(db)
+    for staff, role in zip(repo.list_staff(conn), (1, 2)):  # リーダー・チェッカー・クリーナー各1人にする
+        repo.update_staff(conn, staff.staff_id, employee_code=staff.employee_code, staff_name=staff.staff_name,
+                          role_id=role, skill_level=staff.skill_level, standard_start_time="09:00",
+                          standard_end_time="15:30", target_days_per_week=3)
+    conn.close()
+    at = start(AppTest.from_file(APP, default_timeout=45).run())
+    for d in DATES:
+        at.number_input(key=f"gw_count_{d}").set_value(3)
+    at.run()
+    assert any("どの日も、出られる人が必要人数を満たしています" in s.value for s in at.success)
+
+    at.number_input(key=f"gw_count_{DATES[0]}").set_value(99).run()
+    assert not any("どの日も、出られる人が必要人数を満たしています" in s.value for s in at.success)
+    assert any("このままでは足りなくなる日（1日）" in m.value for m in at.markdown)
+    assert any("まだ保存していない人数で判定しています" in c.value for c in at.caption)
+    conn = get_connection(db)
+    assert services.get_period_requirements(conn, DATES)[0].requirement is None  # まだ保存していない
+    conn.close()
+
+    at.number_input(key=f"gw_count_{DATES[0]}").set_value(3).run()
+    assert any("どの日も、出られる人が必要人数を満たしています" in s.value for s in at.success)

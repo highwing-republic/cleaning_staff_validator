@@ -163,7 +163,6 @@ def _inputs(conn, start, days, dates):
         on_saved=_flash,
         empty_message="特別な希望は登録されていません。変更がなければ、下の必要人数を確認して進めます。",
     )
-    _coverage_section(conn, dates)
 
     st.markdown("**最低何人必要ですか？**")
     st.caption(
@@ -187,18 +186,21 @@ def _inputs(conn, start, days, dates):
             _flash("基本設定を保存しました。各日の人数を確認してください。")
             st.rerun()
     base = st.session_state.setdefault("gw_counts_base", workflow.review_fingerprint(conn, dates, "requirements"))
-    with st.form("gw_counts"):
-        columns = st.columns(2)
-        counts = {}
-        for i, view in enumerate(views):
-            initial = view.requirement.required_total_staff if view.is_defined else (weekend if is_weekend_or_holiday(view.work_date) else weekday)
-            counts[view.work_date] = columns[i % 2].number_input(format_date_short(view.work_date) + " 最低人数", min_value=0, value=initial, step=1, key=f"gw_count_{view.work_date}")
-        st.caption(
-            "役割の内訳は人数から自動で決めます（リーダー1名・チェッカー1名・残りをクリーナー。例: 8名→クリーナー6名）。"
-            "内訳を個別に変えた日や、保存済みの予約室数・最大人数・スキルの条件は維持されます。変更は左メニューの「予約・必要人数」から行えます。"
-        )
-        confirmed = st.checkbox("休みの希望を確認しました（特別な希望がなくてもチェックしてください）", key="gw_checked_preferences")
-        submitted = st.form_submit_button("人数を保存して次へ", type="primary")
+    # 人数はフォームに入れない: 変えるたびに下の体制チェックを、いま入っている人数で判定し直すため
+    columns = st.columns(2)
+    counts = {}
+    for i, view in enumerate(views):
+        initial = view.requirement.required_total_staff if view.is_defined else (weekend if is_weekend_or_holiday(view.work_date) else weekday)
+        counts[view.work_date] = columns[i % 2].number_input(format_date_short(view.work_date) + " 最低人数", min_value=0, value=initial, step=1, key=f"gw_count_{view.work_date}")
+    st.caption(
+        "役割の内訳は人数から自動で決めます（リーダー1名・チェッカー1名・残りをクリーナー。例: 8名→クリーナー6名）。"
+        "内訳を個別に変えた日や、保存済みの予約室数・最大人数・スキルの条件は維持されます。変更は左メニューの「予約・必要人数」から行えます。"
+    )
+    unsaved = any(not view.is_defined or view.requirement.required_total_staff != counts[view.work_date]
+                  for view in views)
+    _coverage_section(conn, dates, counts, unsaved)
+    confirmed = st.checkbox("休みの希望を確認しました（特別な希望がなくてもチェックしてください）", key="gw_checked_preferences")
+    submitted = st.button("人数を保存して次へ", type="primary")
     if submitted:
         if not confirmed:
             st.warning("休みの希望を確認してからチェックしてください。")
@@ -211,11 +213,19 @@ def _inputs(conn, start, days, dates):
             st.rerun()
 
 
-def _coverage_section(conn, dates):
-    """体制チェック: 出られる人が必要人数に届かない日（どう作っても足りない日）を、理由と一緒に知らせる."""
-    days = problem_days(analyze_coverage(conn, dates))
+UNSAVED_COVERAGE_NOTE = "まだ保存していない人数で判定しています（「人数を保存して次へ」で保存されます）。"
+
+
+def _coverage_section(conn, dates, totals=None, unsaved=False):
+    """体制チェック: 出られる人が必要人数に届かない日（どう作っても足りない日）を、理由と一緒に知らせる.
+
+    totals（入力中の人数）を渡すと、保存前の人数で判定する（人数を変えたら、その場で判定し直す）。
+    """
+    days = problem_days(analyze_coverage(conn, dates, totals))
     if not days:
         st.success("体制チェック：どの日も、出られる人が必要人数を満たしています。")
+        if unsaved:
+            st.caption(UNSAVED_COVERAGE_NOTE)
         return
     with st.container(border=True):
         st.markdown(f"**体制チェック：このままでは足りなくなる日（{len(days)}日）**")
@@ -225,7 +235,9 @@ def _coverage_section(conn, dates):
         )
         for day in days:
             st.markdown(f"- **{format_date_short(day.work_date)}**　" + "／".join(describe_problems(day)))
-        if any(day.uses_defaults for day in days):
+        if unsaved:
+            st.caption(UNSAVED_COVERAGE_NOTE)
+        elif any(day.uses_defaults for day in days):
             st.caption("必要人数をまだ保存していない日は、初期値で判定しています。")
 
 

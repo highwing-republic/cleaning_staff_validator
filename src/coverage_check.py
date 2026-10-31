@@ -106,11 +106,29 @@ def _names(names: Iterable[str]) -> str:
     return "・".join(_san(n) for n in names)
 
 
-def load_coverage_input(conn: sqlite3.Connection, dates: list[str]) -> CoverageInput:
+def load_coverage_input(
+    conn: sqlite3.Connection, dates: list[str], totals: Mapping[str, int] | None = None
+) -> CoverageInput:
+    """totals を渡すと、その日は保存前の入力中の人数で判定する.
+
+    役割の内訳は保存するときと同じ決め方にする（自動の日は人数から決め直し、個別に設定した日はそのまま）。
+    """
+    from src.simple_requirements import roles_for_total
+
     roles = repo.list_roles(conn)
     requirements = {}
     for view in services.get_period_requirements(conn, dates):
-        if view.is_defined:
+        if totals is not None and view.work_date in totals:
+            total = int(totals[view.work_date] or 0)
+            req = view.requirement
+            requirements[view.work_date] = (
+                total,
+                {r.role_id: r.required_count for r in roles_for_total(view, total, roles)},
+                req.required_skill_level if req else None,
+                req.required_skill_count if req else 0,
+                False,
+            )
+        elif view.is_defined:
             req = view.requirement
             requirements[view.work_date] = (
                 req.required_total_staff,
@@ -216,8 +234,11 @@ def evaluate_coverage(
     return result
 
 
-def analyze_coverage(conn: sqlite3.Connection, dates: list[str]) -> list[DayCoverage]:
-    return evaluate_coverage(load_coverage_input(conn, dates))
+def analyze_coverage(
+    conn: sqlite3.Connection, dates: list[str], totals: Mapping[str, int] | None = None
+) -> list[DayCoverage]:
+    """体制チェック. totals（work_date -> 人数）を渡すと、保存前の入力中の人数で判定する."""
+    return evaluate_coverage(load_coverage_input(conn, dates, totals))
 
 
 # ---------------------------------------------------------------------------
