@@ -1,0 +1,18 @@
+# 画面の見た目（B「すっきりナチュラル」: 白い背景・くすんだ青・Noto Sans JP）
+# Streamlit Cloud と PC版の両方がこのファイルを読む。
+# 文字の形は Google Fonts から読み込む（読み込めない環境では通常のゴシック体になる）。
+
+[theme]
+base = "light"
+primaryColor = "#3B7EA1"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F3F6F9"
+textColor = "#2B3440"
+borderColor = "#DDE4EA"
+showWidgetBorder = true
+baseRadius = "0.6rem"
+font = "Noto Sans JP:https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700&display=swap"
+
+[theme.sidebar]
+backgroundColor = "#EEF3F7"
+secondaryBackgroundColor = "#E2EAF1"

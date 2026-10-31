@@ -163,7 +163,7 @@ def build_schedule_print_html(export: ScheduleExport) -> str:
 * {{ box-sizing: border-box; }}
 body {{ margin: 0; color: #17212b; font-family: "Yu Gothic", "Meiryo", sans-serif; font-size: 12px; }}
 .toolbar {{ padding: 12px 16px; background: #f1f5f9; }}
-.print-button {{ border: 0; border-radius: 6px; padding: 10px 18px; background: #1457a6; color: white; font-size: 16px; cursor: pointer; }}
+.print-button {{ border: 0; border-radius: 6px; padding: 10px 18px; background: #3b7ea1; color: white; font-size: 16px; cursor: pointer; }}
 main {{ padding: 12px; }}
 h1 {{ margin: 0 0 4px; font-size: 22px; }}
 .meta {{ margin: 3px 0; }}
