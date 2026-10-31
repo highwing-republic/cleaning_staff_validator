@@ -728,7 +728,7 @@ def run_app(secrets=None) -> AppTest:
 
 def test_app_without_settings_shows_nothing(remote, db_file):
     at = run_app()
-    assert not any("控えて" in c.value for c in at.sidebar.caption)
+    assert not any("保存されています" in c.value for c in at.sidebar.caption)
     assert not at.error
     assert remote.downloads == 0
 
@@ -738,7 +738,7 @@ def test_app_restores_before_any_page_and_sends_changes(remote, db_file, tmp_pat
     at = run_app(SECRETS)
 
     assert staff_names(db_file) == ["山田"]
-    assert any("自動で保存先に控えています" in c.value for c in at.sidebar.caption)
+    assert any("「保存」ボタンを押した内容は保存されています" in c.value for c in at.sidebar.caption)
     assert remote.uploads == []  # 開いただけでは送らない
 
     at.run()  # 何も変えずに再実行しても送らない
@@ -774,4 +774,13 @@ def test_app_does_not_open_an_empty_database_while_the_backup_cannot_be_read(
     assert not at.exception
     assert staff_names(db_file) == ["山田"]
     assert [b for b in at.button if b.label == "勤務表をつくる"]  # ホーム画面に戻る
-    assert any("自動で保存先に控えています" in c.value for c in at.sidebar.caption)
+    assert any("「保存」ボタンを押した内容は保存されています" in c.value for c in at.sidebar.caption)
+
+
+def test_app_warns_when_cloud_has_no_password(remote, db_file, tmp_path):
+    """控えの設定がある（= Streamlit Cloud）のに閲覧パスワードが無いときは知らせる."""
+    remote.put(make_db(tmp_path / "saved.db", "山田"))
+    at = run_app(SECRETS)
+    assert any("閲覧パスワードが設定されていません" in w.value for w in at.sidebar.warning)
+    at2 = run_app({**SECRETS, "access": {"password": "pw"}})
+    assert not any("閲覧パスワード" in w.value for w in at2.sidebar.warning)
