@@ -92,7 +92,7 @@ def test_schedule_export_and_generation_follow_the_order(conn):
 # スタッフ管理の画面
 # ---------------------------------------------------------------------------
 
-STAFF_PAGE = str(Path(__file__).resolve().parents[1] / "pages" / "01_staff.py")
+STAFF_PAGE = str(Path(__file__).resolve().parents[1] / "app_pages" / "01_staff.py")
 
 
 def test_staff_page_moves_a_row_with_the_buttons(conn):

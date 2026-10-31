@@ -67,7 +67,7 @@ def test_requirements_page_shows_holiday_name(tmp_path, monkeypatch):
     conn = get_connection(str(path))
     initialize_database(conn)
     conn.close()
-    page = str(Path(__file__).resolve().parents[1] / "pages" / "03_requirements.py")
+    page = str(Path(__file__).resolve().parents[1] / "app_pages" / "03_requirements.py")
     at = AppTest.from_file(page, default_timeout=120)
     at.session_state["requirement_period_start"] = date(2026, 11, 1)
     at.session_state["requirement_period_days"] = 14

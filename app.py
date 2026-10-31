@@ -8,7 +8,7 @@
 import streamlit as st
 
 from src import services
-from src import db_backup, guided_ui, guided_workflow
+from src import access_gate, db_backup, guided_ui, guided_workflow
 from src.navigation import (
     APP_SUBTITLE,
     APP_TITLE,
@@ -48,6 +48,10 @@ __all__ = [
 
 def main() -> None:
     st.set_page_config(page_title=APP_TITLE, layout="wide")
+    # パスワードが設定されていれば、入れるまでどの画面も開かない（URLを直接開いても同じ）
+    if not access_gate.is_authorized():
+        st.navigation([st.Page(_login, title="ログイン", default=True)], position="hidden").run()
+        return
     # Streamlit Cloud ではサーバーのファイルが再起動で消えるため、
     # どの画面よりも先に、非公開リポジトリの控えからデータを戻す（設定が無ければ何もしない）
     db_backup.ensure_restored()
@@ -78,6 +82,10 @@ def main() -> None:
         db_backup.backup_if_changed()
 
 
+def _login() -> None:
+    access_gate.login_page(APP_TITLE)
+
+
 def _restore_failed_screen() -> None:
     st.title(APP_TITLE)
     st.error(db_backup.status()["error"])
@@ -100,9 +108,15 @@ def _show_backup_status() -> None:
     if state["enabled"]:
         saved_at = state["last_saved_at"]
         st.sidebar.caption(
-            "入力した内容は自動で保存先に控えています"
-            + (f"（最終 {saved_at:%m/%d %H:%M}）" if saved_at else "")
+            "「保存」ボタンを押した内容は保存されています"
+            + (f"（最終保存 {saved_at:%m/%d %H:%M}）" if saved_at else "")
+            + "。保存ボタンを押す前の入力は保存されません。"
         )
+        if access_gate.configured_password() is None:
+            # Streamlit Cloud でパスワードが未設定（URLを知っている人は誰でも見られる）
+            st.sidebar.warning(
+                "閲覧パスワードが設定されていません。URLを知っている人は誰でもスタッフの情報を見られます。"
+            )
 
 
 def home() -> None:
@@ -128,7 +142,7 @@ def home() -> None:
         if not services.get_home_status(conn, period_dates(default_period_start(), PERIOD_DEFAULT_DAYS)).has_staff:
             st.info("スタッフがまだ登録されていません。初回だけ「スタッフ管理」で通常の曜日・勤務時間を登録してください。")
             if st.button("スタッフ設定を開く"):
-                st.switch_page("pages/01_staff.py")
+                st.switch_page("app_pages/01_staff.py")
         with st.expander("登録状況・詳しい操作を確認する"):
             _show_status()
             st.caption(

@@ -30,14 +30,14 @@ LEADER, CHECKER, CLEANER = 1, 2, 3
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 PAGES = [
-    "pages/01_staff.py",
-    "pages/02_attendance_import.py",
-    "pages/03_requirements.py",
-    "pages/04_validation.py",
-    "pages/05_preferences.py",
-    "pages/06_generate.py",
-    "pages/07_schedule.py",
-    "pages/08_output.py",
+    "app_pages/01_staff.py",
+    "app_pages/02_attendance_import.py",
+    "app_pages/03_requirements.py",
+    "app_pages/04_validation.py",
+    "app_pages/05_preferences.py",
+    "app_pages/06_generate.py",
+    "app_pages/07_schedule.py",
+    "app_pages/08_output.py",
 ]
 
 
@@ -106,7 +106,7 @@ def test_menu_lists_every_page_with_japanese_title(db_path):
     # 表示順は業務順なのでファイル名順とは一致しない。ページを取りこぼさないことだけ見る
     assert sorted(menu_paths) == PAGES
     assert sorted(menu_paths) == sorted(
-        p.relative_to(REPO_ROOT).as_posix() for p in (REPO_ROOT / "pages").glob("*.py")
+        p.relative_to(REPO_ROOT).as_posix() for p in (REPO_ROOT / "app_pages").glob("*.py")
     )
     assert all(not title.isascii() for _, title in app.MENU_PAGES)
 
@@ -130,12 +130,12 @@ def test_menu_is_ordered_by_the_work_flow(db_path):
         "⑥ 勤務表出力",
     ]
     assert [path for path, _ in app.MAIN_PAGES] == [
-        "pages/01_staff.py",
-        "pages/05_preferences.py",
-        "pages/03_requirements.py",
-        "pages/06_generate.py",
-        "pages/07_schedule.py",
-        "pages/08_output.py",
+        "app_pages/01_staff.py",
+        "app_pages/05_preferences.py",
+        "app_pages/03_requirements.py",
+        "app_pages/06_generate.py",
+        "app_pages/07_schedule.py",
+        "app_pages/08_output.py",
     ]
 
 
@@ -144,8 +144,8 @@ def test_attendance_pages_are_grouped_as_support(db_path):
     import app
 
     assert [path for path, _ in app.SUPPORT_PAGES] == [
-        "pages/02_attendance_import.py",
-        "pages/04_validation.py",
+        "app_pages/02_attendance_import.py",
+        "app_pages/04_validation.py",
     ]
     assert app.MENU_PAGES == app.MAIN_PAGES + app.SUPPORT_PAGES
     assert "補助" in app.SUPPORT_SECTION_LABEL
@@ -207,7 +207,7 @@ def test_home_does_not_show_technical_terms(db_path):
 
 
 def test_ui_uses_app_specific_db(db_path, tmp_path):
-    at = AppTest.from_file(_page("pages/01_staff.py"), default_timeout=30)
+    at = AppTest.from_file(_page("app_pages/01_staff.py"), default_timeout=30)
     at.run()
     assert not at.exception
     assert not (tmp_path / "source_app.db").exists()
@@ -229,7 +229,7 @@ def _create_form_submit(at, employee_code, name, skill=None):
 
 
 def test_staff_page_create_form_saves_employee_code_as_text(db_path):
-    at = AppTest.from_file(_page("pages/01_staff.py"), default_timeout=30)
+    at = AppTest.from_file(_page("app_pages/01_staff.py"), default_timeout=30)
     at.run()
     _create_form_submit(at, "0015", "新人太郎", skill=5)
     assert not at.exception
@@ -248,7 +248,7 @@ def test_staff_page_rejects_duplicate_employee_code(db_path):
     repo.create_staff(conn, "0015", "既存", CLEANER)
     conn.close()
 
-    at = AppTest.from_file(_page("pages/01_staff.py"), default_timeout=30)
+    at = AppTest.from_file(_page("app_pages/01_staff.py"), default_timeout=30)
     at.run()
     create_code = [t for t in at.text_input if t.label == "従業員番号" and not (t.key or "").startswith("edit_")][0]
     create_name = [t for t in at.text_input if t.label == "氏名" and not (t.key or "").startswith("edit_")][0]
@@ -269,7 +269,7 @@ def test_staff_page_edit_form_updates_skill_and_code(db_path):
     staff_id = repo.create_staff(conn, "0001", "山田", CLEANER, 2)
     conn.close()
 
-    at = AppTest.from_file(_page("pages/01_staff.py"), default_timeout=30)
+    at = AppTest.from_file(_page("app_pages/01_staff.py"), default_timeout=30)
     at.run()
     assert not at.exception
 
@@ -290,7 +290,7 @@ def test_staff_page_edit_form_updates_skill_and_code(db_path):
 # 01 スタッフ: 通常勤務条件・特殊スキル（Phase 5）
 # ---------------------------------------------------------------------------
 
-STAFF_PAGE = "pages/01_staff.py"
+STAFF_PAGE = "app_pages/01_staff.py"
 
 
 def _open_staff_page():
@@ -648,7 +648,7 @@ def test_staff_page_edit_form_prefills_existing_conditions(db_path):
 # 03 予約・必要人数（Phase 7）
 # ---------------------------------------------------------------------------
 
-REQUIREMENT_PAGE = "pages/03_requirements.py"
+REQUIREMENT_PAGE = "app_pages/03_requirements.py"
 REQUIREMENT_SAVE_BUTTON = "この期間の予約・必要人数を保存"
 
 
@@ -1018,7 +1018,7 @@ def test_requirements_csv_import_section_remains(db_path):
 # 05 勤務希望入力（Phase 6）
 # ---------------------------------------------------------------------------
 
-PREFERENCE_PAGE = "pages/05_preferences.py"
+PREFERENCE_PAGE = "app_pages/05_preferences.py"
 PREFERENCE_SAVE_BUTTON = "このスタッフの希望を保存"
 
 
@@ -1441,7 +1441,7 @@ def test_preference_switching_staff_does_not_carry_unsaved_input(db_path):
 # 06 シフト生成（Phase 8）
 # ---------------------------------------------------------------------------
 
-GENERATE_PAGE = "pages/06_generate.py"
+GENERATE_PAGE = "app_pages/06_generate.py"
 GENERATE_BUTTON = "勤務案を作成"
 
 
@@ -1939,7 +1939,7 @@ def test_generate_page_does_not_offer_to_overwrite_an_existing_schedule(db_path)
 # 02 勤怠CSV取込
 # ---------------------------------------------------------------------------
 
-IMPORT_PAGE = "pages/02_attendance_import.py"
+IMPORT_PAGE = "app_pages/02_attendance_import.py"
 IMPORT_BUTTON = "この内容を有効版として取り込む"
 
 
@@ -2062,7 +2062,7 @@ def test_import_page_reimport_notice_and_supersede(db_path):
 # 04 日別検証
 # ---------------------------------------------------------------------------
 
-VALIDATION_PAGE = "pages/04_validation.py"
+VALIDATION_PAGE = "app_pages/04_validation.py"
 SEP = get_month_dates("2026-09")
 
 
@@ -2193,7 +2193,7 @@ def test_validation_page_without_import_has_no_excel_download(db_path):
 # 07 勤務表調整
 # ---------------------------------------------------------------------------
 
-SCHEDULE_PAGE = "pages/07_schedule.py"
+SCHEDULE_PAGE = "app_pages/07_schedule.py"
 MANUAL_SAVE_BUTTON = "このスタッフの変更を保存"
 REGENERATE_BUTTON = "固定を守って再生成"
 APPLY_BUTTON = "再生成結果を反映"
@@ -2654,7 +2654,7 @@ def _first_working_day(db_path, ids, dates):
 # 08 勤務表出力
 # ---------------------------------------------------------------------------
 
-OUTPUT_PAGE = "pages/08_output.py"
+OUTPUT_PAGE = "app_pages/08_output.py"
 EXCEL_DOWNLOAD_BUTTON = "勤務表Excelをダウンロード"
 
 
@@ -2911,7 +2911,7 @@ def test_staff_page_back_button_returns_to_the_guided_home(db_path):
     _seed(db_path)
     at = AppTest.from_file(_page("app.py"), default_timeout=60)
     at.run()
-    at.switch_page("pages/01_staff.py").run()
+    at.switch_page("app_pages/01_staff.py").run()
     assert not at.exception
     back = [b for b in at.button if b.label == "ホーム・かんたん作成へ戻る"]
     assert back
@@ -3001,7 +3001,7 @@ def test_output_page_guides_to_the_schedule_page_for_drafts(db_path):
 def test_main_pages_do_not_show_internal_identifiers(db_path):
     """§61: 主画面に run_id・source_run_id・計算状態・DBパス等を並べない."""
     _seed_saved_schedule(db_path)
-    for page in ("pages/07_schedule.py", "pages/08_output.py"):
+    for page in ("app_pages/07_schedule.py", "app_pages/08_output.py"):
         at = AppTest.from_file(_page(page), default_timeout=120)
         at.run()
         assert not at.exception, page

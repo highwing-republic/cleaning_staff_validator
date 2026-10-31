@@ -36,18 +36,18 @@ HEADING_ATTENDANCE_VALIDATION = f"{PAGE_ATTENDANCE_VALIDATION}{SUPPORT_SUFFIX}"
 
 # 左メニュー: 若女将が使う順番に並べる（ファイル名の番号は変更しない）
 MAIN_PAGES: list[tuple[str, str]] = [
-    ("pages/01_staff.py", HEADING_STAFF),
-    ("pages/05_preferences.py", HEADING_PREFERENCES),
-    ("pages/03_requirements.py", HEADING_REQUIREMENTS),
-    ("pages/06_generate.py", HEADING_GENERATE),
-    ("pages/07_schedule.py", HEADING_SCHEDULE),
-    ("pages/08_output.py", HEADING_OUTPUT),
+    ("app_pages/01_staff.py", HEADING_STAFF),
+    ("app_pages/05_preferences.py", HEADING_PREFERENCES),
+    ("app_pages/03_requirements.py", HEADING_REQUIREMENTS),
+    ("app_pages/06_generate.py", HEADING_GENERATE),
+    ("app_pages/07_schedule.py", HEADING_SCHEDULE),
+    ("app_pages/08_output.py", HEADING_OUTPUT),
 ]
 
 # 勤怠CSVの取込・検証は旧機能で、今の勤務表作成には使わない（残すが補助扱い）
 SUPPORT_PAGES: list[tuple[str, str]] = [
-    ("pages/02_attendance_import.py", PAGE_ATTENDANCE_IMPORT),
-    ("pages/04_validation.py", PAGE_ATTENDANCE_VALIDATION),
+    ("app_pages/02_attendance_import.py", PAGE_ATTENDANCE_IMPORT),
+    ("app_pages/04_validation.py", PAGE_ATTENDANCE_VALIDATION),
 ]
 
 MENU_PAGES: list[tuple[str, str]] = MAIN_PAGES + SUPPORT_PAGES

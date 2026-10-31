@@ -135,7 +135,7 @@ def _inputs(conn, start, days, dates):
     if not staff:
         st.info("初回だけスタッフの登録が必要です。通常の曜日・勤務時間を登録すると、次回から繰り返し使えます。")
         if st.button("スタッフ設定を開く"):
-            st.switch_page("pages/01_staff.py")
+            st.switch_page("app_pages/01_staff.py")
         return
 
     st.markdown("**普段と違う希望だけ登録してください**")

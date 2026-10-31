@@ -224,7 +224,7 @@ def test_excel_shows_hours_and_month_totals(conn):
 
 def test_schedule_page_grid_shows_month_totals(conn):
     saved_month(conn)
-    page = str(Path(__file__).resolve().parents[1] / "pages" / "07_schedule.py")
+    page = str(Path(__file__).resolve().parents[1] / "app_pages" / "07_schedule.py")
     at = AppTest.from_file(page, default_timeout=60)
     at.session_state["schedule_period_start"] = date(2026, 10, 31)
     at.session_state["schedule_period_days"] = 14

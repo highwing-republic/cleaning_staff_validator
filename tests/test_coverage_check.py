@@ -283,7 +283,7 @@ def test_choosing_absolute_off_for_the_last_leader_shows_a_warning(conn):
 
 def test_staff_page_lists_setting_problems(conn):
     sid = add(conn, "8", "目安多め", LEADER, WEEKDAYS, target_days_per_week=5, max_consecutive_days=3)
-    at = AppTest.from_file(str(Path(APP).parent / "pages" / "01_staff.py"), default_timeout=30).run()
+    at = AppTest.from_file(str(Path(APP).parent / "app_pages" / "01_staff.py"), default_timeout=30).run()
     assert not at.exception
     assert any(e.label.startswith("設定を確認してください") for e in at.expander)
     texts = " ".join(m.value for m in at.markdown)

@@ -1,6 +1,6 @@
 """日別必要条件CSV/Excelインポート.
 
-DB/Streamlitに依存しない純粋ロジック。UI(pages/03_requirements.py)から呼ばれる。
+DB/Streamlitに依存しない純粋ロジック。UI(app_pages/03_requirements.py)から呼ばれる。
 """
 
 import io
