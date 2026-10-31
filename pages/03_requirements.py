@@ -19,6 +19,7 @@ from src import repositories as repo
 from src import services
 from src.constants import SKILL_LEVEL_MAX, SKILL_LEVEL_MIN
 from src.models import DailyRequirementInput, RoleRequirementInput
+from src.jp_holidays import DAY_COLOR_HOLIDAY, day_color, holiday_name
 from src.navigation import (
     HEADING_REQUIREMENTS,
     PAGE_GENERATE,
@@ -223,13 +224,12 @@ def _day_inputs(work_date: str) -> tuple[DailyRequirementInput | None, list[Role
 
 
 def _date_label(work_date: str) -> str:
-    """土曜は青、日曜は赤で日付を出す."""
+    """土曜は青、日曜・祝日は赤で日付を出す. 祝日は名前も添える."""
     label = format_date_short(work_date)
-    if label.endswith("(土)"):
-        return f"**:blue[{label}]**"
-    if label.endswith("(日)"):
-        return f"**:red[{label}]**"
-    return f"**{label}**"
+    color = day_color(work_date)
+    text = f"**:{color}[{label}]**" if color else f"**{label}**"
+    name = holiday_name(work_date)
+    return f"{text}  \n:{DAY_COLOR_HOLIDAY}[{name}]" if name else text
 
 
 def _breakdown_text(view) -> str:

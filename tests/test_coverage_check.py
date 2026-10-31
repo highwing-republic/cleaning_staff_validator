@@ -188,7 +188,7 @@ def test_explain_shortage_without_a_coverage_problem(conn):
     day = DailyGenerationResult(TUE, "SHORTAGE", True, 3, required_total_staff=3,
                                 role_shortages={LEADER: 1})
     text = explain_shortage(day, coverage, {LEADER: "リーダー"})
-    assert text.startswith("11/3(火)：リーダー1人不足。出られる人はいますが、連続勤務の上限")
+    assert text.startswith("11/3(火・祝)：リーダー1人不足。出られる人はいますが、連続勤務の上限")
 
 
 # ---------------------------------------------------------------------------

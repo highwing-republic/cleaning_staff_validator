@@ -10,7 +10,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.worksheet.worksheet import Worksheet
 
-from src.month_utils import parse_year_month, weekday_index
+from src.month_utils import parse_year_month
 
 WEEKDAY_LABELS = ("月", "火", "水", "木", "金", "土", "日")
 
@@ -33,11 +33,13 @@ def year_month_label(year_month: str) -> str:
 
 
 def weekday_fill(work_date: str) -> PatternFill | None:
-    """土曜・日曜の網掛け. 平日はNone."""
-    wd = weekday_index(work_date)
-    if wd == 5:
+    """土曜・日曜・祝日の網掛け（祝日は日曜と同じ色）. 平日はNone."""
+    from src.jp_holidays import DAY_COLOR_HOLIDAY, DAY_COLOR_SATURDAY, day_color
+
+    color = day_color(work_date)
+    if color == DAY_COLOR_SATURDAY:
         return SATURDAY_FILL
-    if wd == 6:
+    if color == DAY_COLOR_HOLIDAY:
         return SUNDAY_FILL
     return None
 

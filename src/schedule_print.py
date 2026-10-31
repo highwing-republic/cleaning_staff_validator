@@ -9,6 +9,7 @@ from src.models import (
     ScheduleExport,
     ScheduleExportStaffRow,
 )
+from src.jp_holidays import DAY_COLOR_HOLIDAY, DAY_COLOR_SATURDAY, day_color
 from src.period_utils import format_date_short
 from src.schedule_output_display import (
     DRAFT_NOTICE,
@@ -63,6 +64,16 @@ def _issue_details(export: ScheduleExport) -> str:
     return f'<section class="issue-details"><h2>確認が必要な内容</h2><ul>{rows}</ul></section>'
 
 
+def _day_class(work_date: str) -> str:
+    """日付見出しの色分け（土曜は青、日曜・祝日は赤）. 平日は class を付けない."""
+    color = day_color(work_date)
+    if color == DAY_COLOR_SATURDAY:
+        return ' class="day-sat"'
+    if color == DAY_COLOR_HOLIDAY:
+        return ' class="day-holiday"'
+    return ""
+
+
 def _daily_table(export: ScheduleExport) -> str:
     rows = []
     for day in export.validation.days:
@@ -90,7 +101,9 @@ def build_schedule_print_html(export: ScheduleExport) -> str:
     dates = export.work_dates
     period = f"{dates[0]} ～ {dates[-1]}" if dates else "対象期間なし"
     created_at = export.exported_at or datetime.now().isoformat(timespec="seconds")
-    headers = ''.join(f'<th scope="col">{_e(format_date_short(date))}</th>' for date in dates)
+    headers = ''.join(
+        f'<th scope="col"{_day_class(date)}>{_e(format_date_short(date))}</th>' for date in dates
+    )
     staff_rows = []
     for row in export.staff_rows:
         cells = ''.join(
@@ -142,6 +155,8 @@ th {{ background: #e8edf2; }}
 .schedule-table th:nth-child(2) {{ width: 78px; }}
 .schedule-table th:last-child {{ width: 120px; }}
 .staff-name {{ text-align: left; }}
+.day-sat {{ color: #1457a6; background: #e3edf9; }}
+.day-holiday {{ color: #b42318; background: #fbe7e6; }}
 .shift {{ white-space: normal; }}
 .shift-time {{ display: block; white-space: nowrap; }}
 .remarks-cell {{ min-width: 100px; }}
