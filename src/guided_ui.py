@@ -11,7 +11,7 @@ from src.monthly_hours import (
     WorkedShift,
     format_hours,
     format_month_total,
-    month_label,
+    month_column,
     monthly_totals,
     months_of,
     totals_by_month,
@@ -218,7 +218,7 @@ PERIOD_HOURS_COLUMN = "勤務時間"
 
 
 def _month_column(month):
-    return f"{month_label(month)}の合計"
+    return month_column(month)
 
 
 def _add_hours(rows, staff_ids, dates, period_shifts, month_totals):

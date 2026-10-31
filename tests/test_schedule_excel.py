@@ -264,8 +264,9 @@ def test_schedule_sheet_handles_fourteen_days(conn):
         row for row in range(1, ws.max_row + 1) if ws.cell(row=row, column=1).value == "スタッフ"
     )
     headers = row_values(ws, header_row)
-    # スタッフ + 役割 + 14日 + 出勤日数 + 備考
-    assert len(headers) == 2 + 14 + 2
+    # スタッフ + 役割 + 14日 + 出勤日数 + 勤務時間 + 月ごとの合計（10月・11月）+ 備考
+    assert len(headers) == 2 + 14 + 2 + 2 + 1
+    assert headers[16:20] == ["出勤日数", "勤務時間", "10月の合計", "11月の合計"]
 
 
 def test_schedule_sheet_row_order_is_stable(conn):

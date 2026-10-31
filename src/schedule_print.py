@@ -10,6 +10,7 @@ from src.models import (
     ScheduleExportStaffRow,
 )
 from src.jp_holidays import DAY_COLOR_HOLIDAY, DAY_COLOR_SATURDAY, day_color
+from src.monthly_hours import HOURS_NOTE, format_hours, month_column
 from src.period_utils import format_date_short
 from src.schedule_output_display import (
     DRAFT_NOTICE,
@@ -96,6 +97,17 @@ def _daily_table(export: ScheduleExport) -> str:
     )
 
 
+def _month_total_cell(total) -> str:
+    """'110.5時間' と '17日' を2行で（狭い列でも読めるように）. 勤務がなければ '0時間'."""
+    if total is None or total.days == 0:
+        return '<td class="month-total">0時間</td>'
+    return (
+        '<td class="month-total">'
+        f'<span class="shift-time">{_e(format_hours(total.minutes))}</span>'
+        f'<span class="shift-time">{total.days}日</span></td>'
+    )
+
+
 def build_schedule_print_html(export: ScheduleExport) -> str:
     """Return a self-contained, accessible HTML page for printing the schedule."""
     dates = export.work_dates
@@ -104,21 +116,29 @@ def build_schedule_print_html(export: ScheduleExport) -> str:
     headers = ''.join(
         f'<th scope="col"{_day_class(date)}>{_e(format_date_short(date))}</th>' for date in dates
     )
+    months = list(export.months)
+    month_headers = ''.join(f'<th scope="col" class="month-total">{_e(month_column(m))}</th>' for m in months)
     staff_rows = []
     for row in export.staff_rows:
         cells = ''.join(
             f'<td class="shift">{_render_shift_cell(_schedule_cell(row, date, export.validation.day(date)))}</td>'
             for date in dates
         )
+        month_cells = ''.join(_month_total_cell(row.month_totals.get(m)) for m in months)
         staff_rows.append(
             '<tr>'
             f'<th scope="row" class="staff-name">{_e(row.staff.staff_name)}</th>'
-            f'<td>{_e(row.role_name)}</td>{cells}'
+            f'<td>{_e(row.role_name)}</td>{cells}{month_cells}'
             '<td class="remarks-cell" aria-label="手書き用の備考欄"></td>'
             '</tr>'
         )
     if not staff_rows:
-        staff_rows.append(f'<tr><td colspan="{len(dates) + 3}">スタッフが登録されていません</td></tr>')
+        staff_rows.append(f'<tr><td colspan="{len(dates) + len(months) + 3}">スタッフが登録されていません</td></tr>')
+    hours_note = (
+        f'<p class="hours-note">「{"」「".join(month_column(m) for m in months)}」は、'
+        f'その月に保存した勤務の合計です（{_e(HOURS_NOTE)}）。</p>'
+        if months else ""
+    )
 
     notices = []
     if export.validation.has_draft:
@@ -155,6 +175,9 @@ th {{ background: #e8edf2; }}
 .schedule-table th:nth-child(2) {{ width: 78px; }}
 .schedule-table th:last-child {{ width: 120px; }}
 .staff-name {{ text-align: left; }}
+.schedule-table th.month-total {{ width: 62px; }}
+.month-total {{ white-space: nowrap; }}
+.hours-note {{ margin: 4px 0 0; font-size: 10px; }}
 .day-sat {{ color: #1457a6; background: #e3edf9; }}
 .day-holiday {{ color: #b42318; background: #fbe7e6; }}
 .shift {{ white-space: normal; }}
@@ -188,8 +211,9 @@ h2 {{ margin: 10px 0 5px; font-size: 15px; }}
 <p class="meta">勤務表名：清掃勤務表</p>
 <p class="meta">対象期間：{_e(period)}</p>
 {notice_html}
-<table class="schedule-table"><thead><tr><th scope="col">スタッフ</th><th scope="col">役割</th>{headers}<th scope="col">{_e(REMARKS_HEADER)}</th></tr></thead>
+<table class="schedule-table"><thead><tr><th scope="col">スタッフ</th><th scope="col">役割</th>{headers}{month_headers}<th scope="col">{_e(REMARKS_HEADER)}</th></tr></thead>
 <tbody>{''.join(staff_rows)}</tbody></table>
+{hours_note}
 <section class="daily-section"><h2>日別の配置と必要人数</h2>{_daily_table(export)}</section>
 {_issue_details(export)}
 <p class="created">作成時刻：{_e(created_at)}</p>

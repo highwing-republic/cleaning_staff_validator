@@ -1249,6 +1249,20 @@ def build_schedule_export(
         for staff_id in day.assignments
     }
 
+    # 月ごとの合計（期間の外の日に保存した勤務も含む）と、この期間の勤務時間
+    from src.monthly_hours import WorkedShift, monthly_totals, months_of, shift_minutes
+
+    month_totals = monthly_totals(conn, work_dates)
+    period_minutes: dict[int, int] = {}
+    for view in schedule.days:
+        if not view.exists:
+            continue
+        for staff_id, assignment in view.assignments.items():
+            if assignment.is_working:
+                period_minutes[staff_id] = period_minutes.get(staff_id, 0) + shift_minutes(
+                    WorkedShift(staff_id, view.work_date, assignment.start_time, assignment.end_time)
+                )
+
     rows: list[ScheduleExportStaffRow] = []
     for member in _export_staff_order(staff, scheduled_ids):
         cells = {}
@@ -1262,6 +1276,8 @@ def build_schedule_export(
                 staff=member,
                 role_name=role_names.get(member.role_id, str(member.role_id)),
                 cells=cells,
+                period_minutes=period_minutes.get(member.staff_id, 0),
+                month_totals=dict(month_totals.get(member.staff_id, {})),
             )
         )
 
@@ -1271,6 +1287,7 @@ def build_schedule_export(
         staff_rows=rows,
         role_names=role_names,
         exported_at=exported_at,
+        months=months_of(work_dates),
     )
 
 

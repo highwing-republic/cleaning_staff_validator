@@ -2295,11 +2295,18 @@ def test_schedule_page_shows_the_saved_schedule(db_path):
     ids, dates = _seed_saved_schedule(db_path)
     at = _open_schedule_page()
 
+    from src.monthly_hours import month_column, months_of
+    from src.period_utils import format_date_short
+
     grid = _schedule_grid(at)
     assert list(grid["スタッフ"])[1:] == ["リーダー田中", "清掃Aさん", "短時間Bさん"]
-    assert len(grid.columns) == len(dates) + 1
-    assert list(grid.iloc[0])[1:] == ["下書き"] * len(dates)
-    day_values = [str(v) for v in grid[grid.columns[1]][1:]]
+    month_columns = [month_column(m) for m in months_of(dates)]
+    date_columns = [format_date_short(d) for d in dates]
+    # スタッフ + 月ごとの合計 + 日付 + 勤務時間
+    assert list(grid.columns) == ["スタッフ", *month_columns, *date_columns, "勤務時間"]
+    assert list(grid.iloc[0][date_columns]) == ["下書き"] * len(dates)
+    assert all("時間" in str(v) for v in grid[month_columns[0]][1:])
+    day_values = [str(v) for v in grid[date_columns[0]][1:]]
     assert any("09:00-15:30" in v for v in day_values)
     assert ids
 
@@ -2410,9 +2417,10 @@ def test_schedule_page_marks_locked_cells_in_the_grid(db_path):
     at.run()
     _click(at, MANUAL_SAVE_BUTTON)
 
+    from src.period_utils import format_date_short
+
     grid = _schedule_grid(at)
-    column = [c for c in grid.columns if c != "スタッフ"][dates.index(work_date)]
-    assert any("🔒" in str(v) for v in grid[column])
+    assert any("🔒" in str(v) for v in grid[format_date_short(work_date)])
 
 
 def test_schedule_page_switching_staff_does_not_carry_unsaved_input(db_path):

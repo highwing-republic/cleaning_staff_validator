@@ -14,7 +14,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 import sqlite3
 
-from src import services
+from src.models import MonthTotal
 from src.work_time import standard_work_minutes
 
 
@@ -24,15 +24,6 @@ class WorkedShift:
     work_date: str
     start_time: str | None
     end_time: str | None
-
-
-@dataclass(frozen=True)
-class MonthTotal:
-    days: int = 0
-    minutes: int = 0
-
-    def __add__(self, other: "MonthTotal") -> "MonthTotal":
-        return MonthTotal(self.days + other.days, self.minutes + other.minutes)
 
 
 def months_of(dates: Iterable[str]) -> list[str]:
@@ -66,6 +57,8 @@ def totals_by_month(shifts: Iterable[WorkedShift]) -> dict[int, dict[str, MonthT
 
 def saved_shifts(conn: sqlite3.Connection, dates: Iterable[str]) -> list[WorkedShift]:
     """保存済みの勤務表から、出勤の日だけを取り出す."""
+    from src import services  # services → 勤務表の出力 → このモジュール の循環を避ける
+
     dates = sorted(dates)
     if not dates:
         return []
@@ -104,6 +97,14 @@ def format_hours(minutes: int) -> str:
     hours = minutes / 60
     text = f"{hours:.2f}".rstrip("0").rstrip(".")
     return f"{text}時間"
+
+
+def month_column(month: str) -> str:
+    """表の列名 '11月の合計'."""
+    return f"{month_label(month)}の合計"
+
+
+HOURS_NOTE = "勤務表の開始〜終了の時間で数え、休憩は差し引いていません"
 
 
 def format_month_total(total: MonthTotal | None) -> str:
