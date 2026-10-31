@@ -9,7 +9,7 @@ import pandas as pd
 import streamlit as st
 
 from src import services
-from src.guided_ui import render_print
+from src.guided_ui import render_outputs
 from src.constants import (
     VALIDATION_STATUS_ERROR,
     VALIDATION_STATUS_INFO,
@@ -23,10 +23,13 @@ from src.navigation import (
     PAGE_SCHEDULE,
 )
 from src.period_utils import format_date_short, period_dates
-from src.schedule_excel import schedule_excel_filename
 from src.schedule_output_display import (
-    DRAFT_NOTICE,
+    CLEAR_DAYS_LABEL,
     SEVERITY_MARKS,
+    format_date_group,
+    group_issues,
+    is_distributable,
+    not_distributable_message,
     format_day_state,
     format_required,
     format_reserved_rooms,
@@ -38,8 +41,6 @@ from src.schedule_output_display import (
     severity_sort_key,
 )
 from src.ui_common import open_connection, select_period
-
-EXCEL_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 FILTER_PROBLEMS = "問題のある日だけ"
 FILTER_ALL = "全日"
@@ -61,6 +62,11 @@ dates = period_dates(start_date, days)
 validation = services.validate_current_schedule(conn, dates)
 role_names = services.get_role_names(conn)
 
+HOW_TO_CONFIRM = f"先に「{PAGE_SCHEDULE}」で確認・確定してください。"
+if validation.existing_days and not is_distributable(validation):
+    # 「不足なし」と「下書き」が並んでも完成と見間違えないよう、いちばん上に出す
+    st.error(not_distributable_message(validation, HOW_TO_CONFIRM))
+
 # ---------------------------------------------------------------------------
 # サマリー
 # ---------------------------------------------------------------------------
@@ -72,7 +78,7 @@ top[2].metric("確定日数", validation.finalized_days)
 top[3].metric("下書き日数", validation.draft_days)
 
 bottom = st.columns(4)
-bottom[0].metric("問題なし日数", validation.clear_days)
+bottom[0].metric(f"{CLEAR_DAYS_LABEL}の日数", validation.clear_days)
 bottom[1].metric("不足などの問題がある日数", validation.problem_days)
 bottom[2].metric("要件未設定日数", validation.requirement_missing_days)
 bottom[3].metric("不足人数の合計", validation.total_shortage)
@@ -84,49 +90,24 @@ if validation.existing_days == 0:
         f"「{PAGE_GENERATE}」で勤務案を作成し、下書き保存してください。"
     )
 
-if validation.missing_days:
-    st.warning(
-        f"勤務表が未作成の日が{validation.missing_days}日あります。"
-        "Excelには「未作成」と表示されます。"
-    )
-if validation.has_draft:
-    st.info(
-        f"下書きの日付があります（{validation.draft_days}日）。"
-        f"必要に応じて「{PAGE_SCHEDULE}」で確認してください。"
-        f"Excelの勤務表にも「{DRAFT_NOTICE}」と記載されます。"
-    )
 if validation.problem_days:
     st.warning(
         f"不足などの問題がある日が{validation.problem_days}日あります。"
-        "この状態でもExcelは出力できます。"
+        "下の「日別の確認」「問題一覧」で内容を確認してください。"
     )
 
 # ---------------------------------------------------------------------------
-# ブラウザ印刷（Excelを開かずに印刷できる）
+# 印刷・Excel（全日が確定しているときだけ配布用に出す）
 # ---------------------------------------------------------------------------
 
 if validation.existing_days:
-    render_print(services.build_schedule_export(conn, dates))
-
-st.subheader("Excel出力")
-st.caption(
-    "「勤務表」「日別確認」「問題一覧」「出力情報」の4シートです。"
-    "勤務表シートはA4横・横1ページに収まる設定で、当日の変更を手書きできる備考欄が付いています。"
-)
-
-try:
-    excel_bytes = services.export_schedule_excel(conn, dates)
-except Exception as exc:  # 出力に失敗しても検証結果は見られるようにする
-    st.error(f"Excelの作成に失敗しました: {exc}")
-else:
-    st.download_button(
-        "勤務表Excelをダウンロード",
-        data=excel_bytes,
-        file_name=schedule_excel_filename(dates),
-        mime=EXCEL_MIME,
-        type="primary",
-        key="schedule_excel_download",
+    st.subheader("印刷・Excel")
+    st.caption(
+        "Excelは「勤務表」「日別確認」「問題一覧」「出力情報」の4シートです。"
+        "勤務表シートはA4横・横1ページに収まる設定で、当日の変更を手書きできる備考欄が付いています。"
     )
+    render_outputs(conn, dates, services.build_schedule_export(conn, dates), key="schedule",
+                   how=HOW_TO_CONFIRM, show_message=False)
 
 # ---------------------------------------------------------------------------
 # 日別検証
@@ -171,15 +152,16 @@ if mode == FILTER_PROBLEMS:
     issues = [i for i in issues if i.severity != VALIDATION_STATUS_INFO]
 
 if issues:
+    # 同じ内容は日付をまとめて1行にする（14日分の「下書きです」を14行並べない）
     st.dataframe(
         pd.DataFrame(
             [
                 {
-                    "日付": format_date_short(issue.work_date),
-                    "判定": SEVERITY_MARKS.get(issue.severity, issue.severity),
-                    "内容": issue.message,
+                    "日付": format_date_group(group.work_dates),
+                    "判定": SEVERITY_MARKS.get(group.severity, group.severity),
+                    "内容": group.message,
                 }
-                for issue in issues
+                for group in group_issues(issues)
             ]
         ),
         width="stretch",

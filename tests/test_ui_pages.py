@@ -2693,7 +2693,8 @@ def test_output_page_runs_without_a_schedule(db_path):
     _seed_generation_staff(db_path)
     at = _open_output_page()
     assert any("まだ作成されていません" in i.value for i in at.info)
-    assert any(b.label == EXCEL_DOWNLOAD_BUTTON for b in at.download_button)
+    # 勤務表がなければ配布用の出力は出さない
+    assert not any(b.label == EXCEL_DOWNLOAD_BUTTON for b in at.download_button)
 
 
 def test_output_page_offers_period_selection(db_path):
@@ -2725,7 +2726,7 @@ def test_output_page_shows_the_summary(db_path):
     assert metrics["未作成日数"] == "0"
     assert metrics["確定日数"] == "0"
     assert metrics["下書き日数"] == str(len(dates))
-    assert metrics["問題なし日数"] == str(len(dates))
+    assert metrics["人数・役割の不足なしの日数"] == str(len(dates))
 
 
 def test_output_page_shows_the_daily_check_table(db_path):
@@ -2785,7 +2786,7 @@ def test_output_page_shows_missing_schedule_days(db_path):
     assert int({m.label: m.value for m in at.metric}["未作成日数"]) > 0
     assert "未作成" in list(_daily_check_table(at)["状態"])
     assert any("勤務表が未作成" in text for text in _issue_table(at)["内容"])
-    assert any("未作成の日" in w.value for w in at.warning)
+    assert any("未確定の日" in e.value and "まだ配布できません" in e.value for e in at.error)
 
 
 def test_output_page_shows_draft_days(db_path):
@@ -2793,7 +2794,7 @@ def test_output_page_shows_draft_days(db_path):
     _seed_saved_schedule(db_path)
     at = _open_output_page()
     assert "下書き" in list(_daily_check_table(at)["状態"])
-    assert "下書きの日付を含みます" in _all_page_text(at)
+    assert any("この勤務表はまだ配布できません" in e.value for e in at.error)
 
 
 def test_output_page_shows_finalized_days(db_path):
@@ -2809,12 +2810,43 @@ def test_output_page_shows_finalized_days(db_path):
     assert {m.label: m.value for m in at.metric}["確定日数"] == "1"
 
 
+def _finalize_all(db_path, dates):
+    conn = get_connection(str(db_path))
+    for work_date in dates:
+        assert services.finalize_schedule_day(conn, work_date) == []
+    conn.close()
+
+
 def test_output_page_has_the_excel_download_button(db_path):
-    """§83・§84: Excel DownloadButtonがある."""
-    _seed_saved_schedule(db_path)
+    """§83・§84: 全日を確定すると、配布用の Excel DownloadButton が出る."""
+    _, dates = _seed_saved_schedule(db_path)
+    _finalize_all(db_path, dates)
     at = _open_output_page()
     buttons = [b for b in at.download_button if b.label == EXCEL_DOWNLOAD_BUTTON]
     assert len(buttons) == 1
+    assert not at.error
+
+
+def test_output_page_blocks_distribution_while_drafts_remain(db_path):
+    """下書きが1日でも残っていれば、配布用の印刷・Excelは出さない."""
+    _, dates = _seed_saved_schedule(db_path)
+    _finalize_all(db_path, dates[:-1])  # 最後の1日だけ下書き
+    at = _open_output_page()
+    assert not any(b.label == EXCEL_DOWNLOAD_BUTTON for b in at.download_button)
+    assert not at.get("iframe")
+    assert any("未確定の日が1日あります" in e.value for e in at.error)
+
+
+def test_output_page_draft_output_needs_confirmation(db_path):
+    """下書きの出力は折りたたみの中で、チェックを入れたときだけ出す."""
+    _seed_saved_schedule(db_path)
+    at = _open_output_page()
+    assert not any("下書き" in b.label for b in at.download_button)
+    at.checkbox(key="schedule_draft_ok").check().run()
+    assert not at.exception
+    assert any(b.label == "下書きのExcelをダウンロード" for b in at.download_button)
+    assert not any(b.label == EXCEL_DOWNLOAD_BUTTON for b in at.download_button)
+    assert len(at.get("iframe")) == 1
 
 
 def test_output_page_offers_the_download_even_with_problems(db_path):
@@ -2823,6 +2855,7 @@ def test_output_page_offers_the_download_even_with_problems(db_path):
     conn = get_connection(str(db_path))
     services.save_manual_schedule_changes(conn, list(ids.values())[0], {dates[0]: (False, True)})
     conn.close()
+    _finalize_all(db_path, dates)  # 不足があっても、確定していれば出せる
 
     at = _open_output_page()
     assert any(b.label == EXCEL_DOWNLOAD_BUTTON for b in at.download_button)
@@ -2993,9 +3026,9 @@ def test_output_page_guides_to_the_schedule_page_for_drafts(db_path):
     """§17: 下書きがある場合は勤務表調整での確認を促す."""
     _seed_saved_schedule(db_path)
     at = _open_output_page()
-    infos = " ".join(i.value for i in at.info)
-    assert "下書きの日付があります" in infos
-    assert "勤務表調整" in infos
+    errors = " ".join(e.value for e in at.error)
+    assert "未確定の日" in errors
+    assert "勤務表調整" in errors
 
 
 def test_main_pages_do_not_show_internal_identifiers(db_path):

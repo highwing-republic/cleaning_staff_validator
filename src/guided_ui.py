@@ -26,6 +26,14 @@ from src.daily_count_rows import (
 from src.period_utils import default_period_start, format_date_short, format_period, period_dates
 from src.preference_entry import render_preference_entry
 from src.requirement_defaults import is_weekend_or_holiday
+from src.navigation import PAGE_SCHEDULE
+from src.schedule_excel import schedule_excel_filename
+from src.schedule_output_display import (
+    format_date_group,
+    group_issues,
+    is_distributable,
+    not_distributable_message,
+)
 from src.schedule_print import build_schedule_print_html
 
 
@@ -381,9 +389,8 @@ def _finish(conn, start, days, dates):
     export = _saved_table(conn, dates)
     validation = export.validation
     if validation.finalized_days != len(dates):
-        for issue in validation.issues:
-            if issue.severity in ("ERROR", "WARNING"):
-                st.warning(f"{format_date_short(issue.work_date)}：{issue.message}")
+        for group in group_issues(i for i in validation.issues if i.severity in ("ERROR", "WARNING")):
+            st.warning(f"{format_date_group(group.work_dates)}：{group.message}")
         if st.button("手直しへ戻る"):
             _clear_inputs()
             st.session_state["_guided_step"] = 3
@@ -403,18 +410,55 @@ def _finish(conn, start, days, dates):
                 st.rerun()
     else:
         st.success("この期間の勤務表は確定済みです。")
-    if validation.existing_days:
+    render_outputs(conn, dates, export, key="gw_output",
+                   how="先に上の「この期間を配布用に確定」で確定してください。")
+
+
+EXCEL_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+DRAFT_OUTPUT_LABEL = "下書きとして印刷・保存する（確認用。配布しないでください）"
+DRAFT_OUTPUT_CONFIRM = "配布しない下書きとして出力します"
+
+
+def render_outputs(conn, dates, export, *, key, how, show_message=True):
+    """印刷とExcel. 全日が確定していれば配布用に出す.
+
+    確定していない日が1日でもあれば配布用は出さず、確認のための下書き出力だけを
+    折りたたみの中に置く（チェックを入れたときだけ出す）。
+    """
+    validation = export.validation
+    if not validation.existing_days:
+        return
+    if is_distributable(validation):
         render_print(export)
-        with st.expander("Excelで保存する"):
-            st.download_button("勤務表Excelをダウンロード", services.export_schedule_excel(conn, dates),
-                               file_name=f"勤務表_{dates[0]}_{dates[-1]}.xlsx",
-                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        _excel_button(conn, dates, "勤務表Excelをダウンロード", schedule_excel_filename(dates),
+                      key=f"{key}_excel", primary=True)
+        return
+    if show_message:
+        st.warning(not_distributable_message(validation, how))
+    with st.expander(DRAFT_OUTPUT_LABEL):
+        if st.checkbox(DRAFT_OUTPUT_CONFIRM, key=f"{key}_draft_ok"):
+            render_print(export, draft=True)
+            _excel_button(conn, dates, "下書きのExcelをダウンロード",
+                          schedule_excel_filename(dates).replace(".xlsx", "_下書き.xlsx"),
+                          key=f"{key}_draft_excel", primary=False)
 
 
-def render_print(export):
-    st.markdown("**印刷プレビュー**")
-    st.caption("枠内の「印刷する」を押してください。未確定の日がある場合は下書きとして表示します。")
+def _excel_button(conn, dates, label, file_name, *, key, primary):
+    try:
+        data = services.export_schedule_excel(conn, dates)
+    except Exception as exc:  # 出力に失敗しても画面は見られるようにする
+        st.error(f"Excelの作成に失敗しました: {exc}")
+        return
+    st.download_button(label, data, file_name=file_name, mime=EXCEL_MIME,
+                       type="primary" if primary else "secondary", key=key)
+
+
+def render_print(export, draft=False):
+    st.markdown("**下書きの印刷プレビュー（配布しないでください）**" if draft else "**印刷プレビュー**")
+    st.caption("枠内の「印刷する」を押してください。")
     html = build_schedule_print_html(export)
     st.iframe(html, height=620)
-    st.download_button("印刷用ファイルを保存", html, file_name=f"勤務表_{export.work_dates[0]}.html", mime="text/html")
+    suffix = "_下書き" if draft else ""
+    st.download_button("印刷用ファイルを保存", html, file_name=f"勤務表_{export.work_dates[0]}{suffix}.html",
+                       mime="text/html")
     st.caption("印刷画面が開かない場合は、印刷用ファイルを保存してブラウザで開いてください。")

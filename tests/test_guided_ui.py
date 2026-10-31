@@ -144,3 +144,19 @@ def test_period_follows_guided_flow_to_detailed_pages(db):
     at.switch_page("app_pages/03_requirements.py").run()
     assert not at.exception
     assert at.date_input[0].value == date(2026, 11, 5)
+
+
+def test_step4_does_not_offer_distribution_before_finalizing(db):
+    """④で確定する前は、配布用の印刷・Excelを出さない（下書きはチェックを入れたときだけ）."""
+    at = AppTest.from_file(APP, default_timeout=45).run()
+    start(at)
+    inputs(at)
+    saved(at)
+    press(at, "保存した勤務表で次へ")
+    assert at.session_state["_guided_step"] == 4
+    assert not at.get("iframe")
+    assert not any(b.label == "勤務表Excelをダウンロード" for b in at.download_button)
+    assert any("まだ配布できません" in w.value and "この期間を配布用に確定" in w.value for w in at.warning)
+    at.checkbox(key="gw_output_draft_ok").check().run()
+    assert len(at.get("iframe")) == 1
+    assert any(b.label == "下書きのExcelをダウンロード" for b in at.download_button)
