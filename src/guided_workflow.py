@@ -12,9 +12,9 @@ from src.period_utils import parse_date, period_dates
 from src.requirement_defaults import (
     WEEKDAY_REQUIRED_TOTAL,
     WEEKEND_REQUIRED_TOTAL,
-    default_role_requirements,
 )
 from src.shift_generation import generate_shift
+from src.simple_requirements import roles_for_total
 
 
 class WorkflowError(ValueError):
@@ -159,10 +159,10 @@ def save_defaults(conn, weekday_staff, weekend_staff):
 
 
 def save_staff_counts(conn, dates, counts, expected_fingerprint):
-    """簡易入力で変更しないロール・スキル・最大人数などをそのまま保持する。
+    """簡易入力で変更しないスキル・最大人数などをそのまま保持する。
 
-    初めて設定する日（要件の行がない日）は、役割の最低人数の初期値
-    （平日はクリーナー5名、土日は4名。リーダー・チェッカーは各1名）も一緒に保存する。
+    役割の内訳は人数に合わせて自動で決める（リーダー1・チェッカー1・残りクリーナー）。
+    ただし詳しい設定で内訳を個別に変えた日は、その内訳を守る。
     """
     with _write(conn):
         if review_fingerprint(conn, dates, "requirements") != expected_fingerprint:
@@ -171,12 +171,9 @@ def save_staff_counts(conn, dates, counts, expected_fingerprint):
         requirements = [replace(view.requirement, required_total_staff=counts[view.work_date])
                         if view.is_defined else DailyRequirementInput(view.work_date, counts[view.work_date])
                         for view in current]
-        roles = repo.list_role_requirements(conn, dates[0], dates[-1])
-        dates_with_roles = {r.work_date for r in roles}
         role_master = repo.list_roles(conn)
-        for view in current:
-            if not view.is_defined and view.work_date not in dates_with_roles:
-                roles.extend(default_role_requirements(view.work_date, role_master))
+        roles = [role for view in current
+                 for role in roles_for_total(view, counts[view.work_date], role_master)]
         errors = services.save_period_requirements(conn, dates, requirements, roles)
         if errors:
             raise WorkflowError("\n".join(e.message for e in errors))

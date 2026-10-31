@@ -5,6 +5,10 @@
 - 土日: リーダー1名・チェッカー1名・クリーナー4名（計6名）
 祝日はアプリで判定しない（平日の初期値になる。必要なら画面で直す）。
 ロールは role_code で引く（DB の role_id を決め打ちしない）。
+
+役割の内訳は必要人数（合計）から自動で決められる（auto_role_counts）:
+リーダー1名・チェッカー1名・残りをクリーナー（7名→1・1・5、6名→1・1・4）。
+初期値の内訳もこの決め方と一致する。
 """
 
 from collections.abc import Iterable, Mapping
@@ -64,3 +68,62 @@ def describe_default_roles(roles: Iterable[Mapping]) -> str:
         f"平日 計{WEEKDAY_REQUIRED_TOTAL}名（{_describe(WEEKDAY_ROLE_MINIMUMS, roles)}）、"
         f"土日 計{WEEKEND_REQUIRED_TOTAL}名（{_describe(WEEKEND_ROLE_MINIMUMS, roles)}）"
     )
+
+
+AUTO_LEADER_CODE = "LEADER"
+AUTO_CHECKER_CODE = "CHECKER"
+AUTO_CLEANER_CODE = "CLEANER"
+
+
+def auto_role_counts(total: int, roles: Iterable[Mapping]) -> dict[int, int]:
+    """必要人数（合計）から決める role_id -> 人数.
+
+    リーダー1名（1名以上のとき）・チェッカー1名（2名以上のとき）・残りをクリーナー。
+    ほかの役割は 0。
+    """
+    total = max(0, int(total or 0))
+    by_code = {
+        AUTO_LEADER_CODE: 1 if total >= 1 else 0,
+        AUTO_CHECKER_CODE: 1 if total >= 2 else 0,
+        AUTO_CLEANER_CODE: max(0, total - 2),
+    }
+    return {role["role_id"]: by_code.get(role["role_code"], 0) for role in roles}
+
+
+def auto_role_requirements(work_date: str, total: int, roles: Iterable[Mapping]) -> list[RoleRequirementInput]:
+    """必要人数から決めた役割ごとの人数. 0人の役割は行を作らない."""
+    return [
+        RoleRequirementInput(work_date, role_id, count)
+        for role_id, count in auto_role_counts(total, roles).items()
+        if count > 0
+    ]
+
+
+def _nonzero(counts: Mapping[int, int]) -> dict[int, int]:
+    return {role_id: count for role_id, count in counts.items() if count}
+
+
+def roles_follow_total(
+    role_counts: Mapping[int, int], is_defined: bool, saved_total: int | None, roles: Iterable[Mapping]
+) -> bool:
+    """その日の役割の内訳が「必要人数から自動で決める」扱いか.
+
+    - 役割の行がない日 → 自動
+    - 保存済みの必要人数から自動で決めた内訳と同じ → 自動（人数を変えたら内訳も変える）
+    - それ以外（詳しい設定で個別に変えた日など）→ 個別. 人数を変えても内訳はそのまま
+    """
+    if not role_counts:
+        return True
+    if not is_defined or saved_total is None:
+        return False
+    return _nonzero(role_counts) == _nonzero(auto_role_counts(saved_total, roles))
+
+
+def describe_role_counts(role_counts: Mapping[int, int], roles: Iterable[Mapping]) -> str:
+    """'リーダー1・チェッカー2・クリーナー3'（0人の役割は書かない. なければ '指定なし'）."""
+    parts = [
+        f"{role['role_name']}{role_counts[role['role_id']]}"
+        for role in roles
+        if role_counts.get(role["role_id"], 0) > 0
+    ]
+    return "・".join(parts) or "指定なし"

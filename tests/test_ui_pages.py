@@ -652,10 +652,14 @@ REQUIREMENT_PAGE = "pages/03_requirements.py"
 REQUIREMENT_SAVE_BUTTON = "この期間の予約・必要人数を保存"
 
 
-def _open_requirement_page():
+def _open_requirement_page(advanced=True):
+    """予約・必要人数の画面を開く. 既存の入力欄（req_{date}_*）のテストは「詳しく設定する」を開いて使う."""
     at = AppTest.from_file(_page(REQUIREMENT_PAGE), default_timeout=120)
     at.run()
     assert not at.exception
+    if advanced:
+        at.toggle(key="requirements_advanced").set_value(True).run()
+        assert not at.exception
     return at
 
 
