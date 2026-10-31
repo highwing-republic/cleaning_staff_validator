@@ -106,3 +106,34 @@ def test_a_page_opened_directly_shows_no_data(db):
     assert not at.exception
     assert not at.dataframe
     assert any("パスワードを入力してから" in w.value for w in at.warning)
+
+
+@pytest.mark.parametrize(("url_path", "title"), [
+    ("staff", "スタッフ管理"),
+    ("requirements", "予約・必要人数"),
+    ("output", "勤務表出力"),
+])
+def test_opening_a_page_url_before_login_returns_there_after_login(db, url_path, title):
+    """未ログインで /staff などを開くとログイン画面が出て（Page not found にしない）、ログイン後はその画面が開く."""
+    from streamlit.util import calc_hash
+
+    at = AppTest.from_file(APP, default_timeout=45)
+    at.secrets["access"] = {"password": "合言葉"}
+    at._page_hash = calc_hash(url_path)  # ブラウザでそのURLを開いたのと同じ
+    at.run()
+    assert not at.exception
+    assert at.text_input(key="access_password_input")
+    assert HOME_BUTTON not in buttons(at)
+
+    at.text_input(key="access_password_input").input("合言葉")
+    at.button[0].click().run()
+    assert not at.exception
+    assert HOME_BUTTON not in buttons(at)  # ホームではなく、開こうとした画面
+    assert any(title in t.value for t in at.title)
+
+
+def test_login_from_the_top_page_opens_home(db):
+    at = run("合言葉")
+    at.text_input(key="access_password_input").input("合言葉")
+    at.button[0].click().run()
+    assert HOME_BUTTON in buttons(at)

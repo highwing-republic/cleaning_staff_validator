@@ -1,7 +1,6 @@
 """Streamlit エントリポイント.
 
-左メニューは若女将が使う順番に並べる。勤怠CSVの取込・検証は旧機能なので
-「補助機能」として分けて置く（削除はしない）。
+左メニューは若女将が使う順番に並べる。勤怠CSVの取込・検証の画面は削除した。
 ファイル名の番号は変えず、表示上の並びだけを業務順にしている。
 """
 
@@ -22,8 +21,6 @@ from src.navigation import (
     PAGE_REQUIREMENTS,
     PAGE_SCHEDULE,
     PAGE_STAFF,
-    SUPPORT_PAGES,
-    SUPPORT_SECTION_LABEL,
     USAGE_STEPS,
 )
 from src.period_utils import (
@@ -34,13 +31,14 @@ from src.period_utils import (
 )
 from src.ui_common import open_connection
 
-# MENU_PAGES / MAIN_PAGES / SUPPORT_PAGES は src/navigation.py の定義をそのまま再公開する
+# ホームのURL上の名前（ログイン画面も同じにして、ログイン後にホームが開くようにする）
+HOME_URL_PATH = "home"
+
+# MENU_PAGES / MAIN_PAGES は src/navigation.py の定義をそのまま再公開する
 __all__ = [
     "APP_TITLE",
     "MAIN_PAGES",
     "MENU_PAGES",
-    "SUPPORT_PAGES",
-    "SUPPORT_SECTION_LABEL",
     "home",
     "main",
 ]
@@ -50,7 +48,7 @@ def main() -> None:
     st.set_page_config(page_title=APP_TITLE, layout="wide")
     # パスワードが設定されていれば、入れるまでどの画面も開かない（URLを直接開いても同じ）
     if not access_gate.is_authorized():
-        st.navigation([st.Page(_login, title="ログイン", default=True)], position="hidden").run()
+        _login_navigation()
         return
     # Streamlit Cloud ではサーバーのファイルが再起動で消えるため、
     # どの画面よりも先に、非公開リポジトリの控えからデータを戻す（設定が無ければ何もしない）
@@ -58,7 +56,7 @@ def main() -> None:
     restore_failed = db_backup.status()["restore_failed"]
     if not restore_failed:
         _show_backup_status()
-    home_page = st.Page(home, title=PAGE_HOME, default=True)
+    home_page = st.Page(home, title=PAGE_HOME, default=True, url_path=HOME_URL_PATH)
     # スタッフ管理などから「ホーム・かんたん作成へ戻る」で戻れるようにする
     st.session_state[HOME_PAGE_STATE_KEY] = home_page
     navigation = st.navigation(
@@ -66,9 +64,6 @@ def main() -> None:
             MAIN_SECTION_LABEL: [home_page],
             "スタッフ設定": [st.Page(MAIN_PAGES[0][0], title="スタッフ管理")],
             "詳細操作（必要なときだけ）": [st.Page(path, title=title) for path, title in MAIN_PAGES[1:]],
-            SUPPORT_SECTION_LABEL: [
-                st.Page(path, title=title) for path, title in SUPPORT_PAGES
-            ],
         }
     )
     if restore_failed:
@@ -84,6 +79,27 @@ def main() -> None:
 
 def _login() -> None:
     access_gate.login_page(APP_TITLE)
+
+
+def _login_for_page():
+    def page() -> None:
+        access_gate.login_page(APP_TITLE)
+
+    return page
+
+
+def _login_navigation() -> None:
+    """ログイン前は、どのURLを開いてもログイン画面だけを出す.
+
+    ふだんの画面と同じURL（/staff など）にログイン画面を置くので、URLを直接開いても
+    「Page not found」にならず、ログインしたあとはそのまま開こうとした画面が開く
+    （Streamlit はURLから決まる同じ識別子のページを開き直すため）。
+    """
+    pages = [st.Page(_login, title="ログイン", default=True, url_path=HOME_URL_PATH)]
+    for path, title in MENU_PAGES:
+        url_path = st.Page(path, title=title).url_path  # ふだんの画面と同じURL
+        pages.append(st.Page(_login_for_page(), title=title, url_path=url_path))
+    st.navigation(pages, position="hidden").run()
 
 
 def _restore_failed_screen() -> None:
@@ -151,7 +167,6 @@ def home() -> None:
             )
             for step in USAGE_STEPS:
                 st.write(step)
-            st.caption("勤怠CSVの補助機能は、通常の勤務表づくりには使いません。")
     finally:
         conn.close()
 

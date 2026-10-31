@@ -4,13 +4,11 @@ streamlit.testing.v1.AppTest でページを実行し、例外なくレンダリ
 主要な操作（スタッフ登録・更新など）が動くことを確認する。ピクセル単位の検証は行わない。
 """
 
-from datetime import date
 from pathlib import Path
 
 import pytest
 from streamlit.testing.v1 import AppTest
 
-from attendance_csv import make_csv
 from src import repositories as repo
 from src import services
 from src.database import get_connection, initialize_database
@@ -31,9 +29,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 PAGES = [
     "app_pages/01_staff.py",
-    "app_pages/02_attendance_import.py",
     "app_pages/03_requirements.py",
-    "app_pages/04_validation.py",
     "app_pages/05_preferences.py",
     "app_pages/06_generate.py",
     "app_pages/07_schedule.py",
@@ -140,16 +136,13 @@ def test_menu_is_ordered_by_the_work_flow(db_path):
     ]
 
 
-def test_attendance_pages_are_grouped_as_support(db_path):
-    """§6・§7: 旧勤怠CSV機能は削除せず、補助機能として分ける."""
+def test_attendance_csv_pages_are_removed(db_path):
+    """勤怠CSVの取込・検証の画面は削除した（メニューにもファイルにも残さない）."""
     import app
 
-    assert [path for path, _ in app.SUPPORT_PAGES] == [
-        "app_pages/02_attendance_import.py",
-        "app_pages/04_validation.py",
-    ]
-    assert app.MENU_PAGES == app.MAIN_PAGES + app.SUPPORT_PAGES
-    assert "補助" in app.SUPPORT_SECTION_LABEL
+    assert app.MENU_PAGES == app.MAIN_PAGES
+    assert not (REPO_ROOT / "app_pages" / "02_attendance_import.py").exists()
+    assert not (REPO_ROOT / "app_pages" / "04_validation.py").exists()
 
 
 def test_app_title_is_the_mvp_name(db_path):
@@ -1937,260 +1930,6 @@ def test_generate_page_does_not_offer_to_overwrite_an_existing_schedule(db_path)
     assert any("勤務表調整" in i.value for i in at.info)
     assert any("この画面からは保存しません" in i.value for i in at.info)
     assert _schedule_counts(db_path) == before
-
-
-# ---------------------------------------------------------------------------
-# 02 勤怠CSV取込
-# ---------------------------------------------------------------------------
-
-IMPORT_PAGE = "app_pages/02_attendance_import.py"
-IMPORT_BUTTON = "この内容を有効版として取り込む"
-
-
-def _import_counts(db_path):
-    conn = get_connection(str(db_path))
-    counts = (
-        conn.execute("SELECT COUNT(*) FROM attendance_imports").fetchone()[0],
-        conn.execute("SELECT COUNT(*) FROM attendance_shifts").fetchone()[0],
-    )
-    conn.close()
-    return counts
-
-
-def _open_import_page():
-    at = AppTest.from_file(_page(IMPORT_PAGE), default_timeout=30)
-    at.run()
-    assert not at.exception
-    return at
-
-
-def _upload(at, data, name="shift_2026-09.csv"):
-    at.file_uploader[0].upload(name, data, "text/csv")
-    at.run()
-    assert not at.exception
-    return at
-
-
-def _import_buttons(at):
-    return [b for b in at.button if b.label == IMPORT_BUTTON]
-
-
-def _metrics(at):
-    return {m.label: m.value for m in at.metric}
-
-
-def _all_text(at):
-    parts = [e.value for e in at.markdown] + [e.value for e in at.caption]
-    parts += [e.value for e in at.info] + [e.value for e in at.warning]
-    parts += [e.value for e in at.success] + [e.value for e in at.error]
-    return "\n".join(str(p) for p in parts)
-
-
-def test_import_page_before_upload(db_path):
-    at = _open_import_page()
-    assert _import_buttons(at) == []
-    assert "有効な取込はまだありません" in _all_text(at)
-    assert len(at.file_uploader) == 1
-
-
-def test_import_page_preview_does_not_save(db_path):
-    at = _upload(_open_import_page(), make_csv())
-    metrics = _metrics(at)
-    assert metrics["対象月"] == "2026年9月"
-    assert metrics["従業員数"] == "3"
-    assert metrics["入力済みシフトセル数"] == "90"
-    assert metrics["清掃所属人数"] == "2"
-    assert metrics["未登録スタッフ数"] == "3"
-    assert metrics["UNKNOWN勤務セル数"] == "0"
-    assert "shift_2026-09.csv" in _all_text(at)
-    # 未登録スタッフ一覧が確認できる
-    assert any("未登録スタッフ" in e.label for e in at.expander)
-
-    (button,) = _import_buttons(at)
-    assert not button.disabled
-    assert _import_counts(db_path) == (0, 0)
-
-
-def test_import_page_fatal_error_blocks_saving(db_path):
-    at = _upload(_open_import_page(), make_csv(extra_columns=["備考"]))
-    assert at.error, "fatal error should be shown"
-    buttons = _import_buttons(at)
-    assert buttons and all(b.disabled for b in buttons)
-    assert _import_counts(db_path) == (0, 0)
-
-
-def test_import_page_saves_and_shows_active(db_path):
-    _seed(db_path)  # 0001〜0003 は CSV にないので全員未登録
-    at = _upload(_open_import_page(), make_csv())
-    _import_buttons(at)[0].click()
-    at.run()
-    assert not at.exception
-
-    assert _import_counts(db_path) == (1, 90)
-    text = _all_text(at)
-    assert "取込が完了しました" in text and "2026年9月の有効版を更新しました" in text
-    # アップロード欄がリセットされ、同じ内容を二重に取り込めない
-    assert _import_buttons(at) == []
-
-    active_table = at.dataframe[0].value
-    assert list(active_table["ファイル名"]) == ["shift_2026-09.csv"]
-    assert list(active_table["対象月"]) == ["2026年9月"]
-    assert list(active_table["未登録人数"]) == [3]
-
-
-def test_import_page_reimport_notice_and_supersede(db_path):
-    conn = get_connection(str(db_path))
-    services.import_attendance(
-        conn, services.preview_attendance_csv(conn, make_csv(), "old.csv")
-    )
-    conn.close()
-
-    at = _upload(_open_import_page(), make_csv(), "new.csv")
-    assert "2026年9月には既に有効な取込があります" in _all_text(at)
-    assert "現在の取込は履歴として残り" in _all_text(at)
-
-    _import_buttons(at)[0].click()
-    at.run()
-    assert not at.exception
-
-    conn = get_connection(str(db_path))
-    history = repo.list_attendance_imports(conn, "2026-09")
-    conn.close()
-    assert [(h.source_filename, h.status) for h in history] == [
-        ("new.csv", "ACTIVE"),
-        ("old.csv", "SUPERSEDED"),
-    ]
-
-
-# ---------------------------------------------------------------------------
-# 04 日別検証
-# ---------------------------------------------------------------------------
-
-VALIDATION_PAGE = "app_pages/04_validation.py"
-SEP = get_month_dates("2026-09")
-
-
-def _seed_validation(db_path):
-    """2026-09: OK 28日 / ERROR 1日(9/2) / 要件未設定 1日(9/3). 2026-10 も取込のみ行う."""
-    conn = get_connection(str(db_path))
-    repo.create_staff(conn, "0015", "テスト清掃A", LEADER, 4, "清掃")
-    for ym, name in (("2026-09", "sep.csv"), ("2026-10", "oct.csv")):
-        services.import_attendance(conn, services.preview_attendance_csv(conn, make_csv(ym), name))
-    repo.save_daily_requirements(
-        conn, [DailyRequirementInput(d, 2 if d == SEP[1] else 1) for d in SEP if d != SEP[2]]
-    )
-    conn.close()
-
-
-def _open_validation_page():
-    at = AppTest.from_file(_page(VALIDATION_PAGE), default_timeout=30)
-    at.run()
-    assert not at.exception
-    return at
-
-
-def _table_dates(at):
-    return list(at.dataframe[0].value["日付"]) if len(at.dataframe) else []
-
-
-def test_validation_page_without_active_import(db_path):
-    at = _open_validation_page()
-    assert "勤怠シフトが取り込まれていません" in _all_text(at)
-    assert len(at.dataframe) == 0
-
-
-def test_validation_page_month_selection_defaults_to_latest(db_path):
-    _seed_validation(db_path)
-    at = _open_validation_page()
-    select = at.selectbox(key="validation_year_month")
-    assert list(select.options) == ["2026年10月", "2026年9月"]
-    assert _metrics(at)["対象月"] == "2026年10月"
-    assert "oct.csv" in _all_text(at)
-
-    select.set_value("2026-09").run()
-    assert not at.exception
-    metrics = _metrics(at)
-    assert metrics["対象月"] == "2026年9月"
-    assert (metrics["OK日数"], metrics["WARNING日数"], metrics["ERROR日数"]) == ("28", "1", "1")
-    assert metrics["要件未設定日数"] == "1"
-    assert "sep.csv" in _all_text(at)
-
-
-def _open_september(db_path):
-    _seed_validation(db_path)
-    at = _open_validation_page()
-    at.selectbox(key="validation_year_month").set_value("2026-09").run()
-    assert not at.exception
-    return at
-
-
-def test_validation_page_all_days_table(db_path):
-    at = _open_september(db_path)
-    table = at.dataframe[0].value
-    assert len(table) == 30
-    # ロール列は role master から生成される
-    assert {"リーダー", "チェッカー", "クリーナー"} <= set(table.columns)
-    by_date = table.set_index("日付")
-    assert by_date.loc["9月1日(火)", "判定"] == "🟢 OK"
-    assert by_date.loc["9月2日(水)", "判定"] == "🔴 ERROR"
-    assert by_date.loc["9月3日(木)", "必要"] == "要件未設定"
-    assert by_date.loc["9月3日(木)", "判定"] == "🟡 WARNING"
-    assert by_date.loc["9月1日(火)", "清掃勤務"] == 1
-
-
-def test_validation_page_problem_days_filter(db_path):
-    at = _open_september(db_path)
-    at.radio(key="validation_filter").set_value("問題のある日だけ").run()
-    assert not at.exception
-    assert _table_dates(at) == ["9月2日(水)", "9月3日(木)"]
-
-
-def test_validation_page_errors_only_filter(db_path):
-    at = _open_september(db_path)
-    at.radio(key="validation_filter").set_value("ERRORのみ").run()
-    assert not at.exception
-    assert _table_dates(at) == ["9月2日(水)"]
-
-
-def test_validation_page_issue_details(db_path):
-    at = _open_september(db_path)
-    labels = [e.label for e in at.expander]
-    assert any(label.startswith("9月2日(水)") and "ERROR" in label for label in labels)
-    assert any(label.startswith("9月3日(木)") and "WARNING" in label for label in labels)
-    errors = [e.value for e in at.error]
-    assert any("清掃スタッフが1名以上不足しています" in m and "必要：2名" in m for m in errors)
-    warnings = [e.value for e in at.warning]
-    assert any("必要条件が未設定" in m for m in warnings)
-
-
-def _download_buttons(at):
-    return at.get("download_button")
-
-
-def test_validation_page_shows_excel_download(db_path):
-    at = _open_september(db_path)
-    (button,) = _download_buttons(at)
-    assert button.proto.label == "Excelをダウンロード"
-    assert all("Excelの作成に失敗" not in e.value for e in at.error)
-
-
-def test_validation_page_excel_failure_does_not_crash(db_path, monkeypatch):
-    import src.validation_excel as validation_excel
-
-    def _boom(*args, **kwargs):
-        raise RuntimeError("disk full")
-
-    monkeypatch.setattr(validation_excel, "export_validation_excel", _boom)
-    at = _open_september(db_path)
-    assert _download_buttons(at) == []
-    assert any("Excelの作成に失敗しました" in e.value for e in at.error)
-    # 検証結果の表示は続く
-    assert len(at.dataframe[0].value) == 30
-
-
-def test_validation_page_without_import_has_no_excel_download(db_path):
-    at = _open_validation_page()
-    assert _download_buttons(at) == []
 
 
 # ---------------------------------------------------------------------------

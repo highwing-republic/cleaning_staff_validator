@@ -19,10 +19,7 @@ PAGE_REQUIREMENTS = "予約・必要人数"
 PAGE_GENERATE = "シフト生成"
 PAGE_SCHEDULE = "勤務表調整"
 PAGE_OUTPUT = "勤務表出力"
-PAGE_ATTENDANCE_IMPORT = "勤怠CSV取込"
-PAGE_ATTENDANCE_VALIDATION = "勤怠データ検証"
 
-SUPPORT_SUFFIX = "（補助）"
 
 # 各画面の見出し（各ページはここから見出しを取る）
 HEADING_STAFF = PAGE_STAFF
@@ -31,8 +28,6 @@ HEADING_REQUIREMENTS = PAGE_REQUIREMENTS
 HEADING_GENERATE = PAGE_GENERATE
 HEADING_SCHEDULE = PAGE_SCHEDULE
 HEADING_OUTPUT = PAGE_OUTPUT
-HEADING_ATTENDANCE_IMPORT = f"{PAGE_ATTENDANCE_IMPORT}{SUPPORT_SUFFIX}"
-HEADING_ATTENDANCE_VALIDATION = f"{PAGE_ATTENDANCE_VALIDATION}{SUPPORT_SUFFIX}"
 
 # 左メニュー: 若女将が使う順番に並べる（ファイル名の番号は変更しない）
 MAIN_PAGES: list[tuple[str, str]] = [
@@ -44,16 +39,10 @@ MAIN_PAGES: list[tuple[str, str]] = [
     ("app_pages/08_output.py", HEADING_OUTPUT),
 ]
 
-# 勤怠CSVの取込・検証は旧機能で、今の勤務表作成には使わない（残すが補助扱い）
-SUPPORT_PAGES: list[tuple[str, str]] = [
-    ("app_pages/02_attendance_import.py", PAGE_ATTENDANCE_IMPORT),
-    ("app_pages/04_validation.py", PAGE_ATTENDANCE_VALIDATION),
-]
-
-MENU_PAGES: list[tuple[str, str]] = MAIN_PAGES + SUPPORT_PAGES
+# 勤怠CSVの取込・検証の画面は削除した（今の勤務表づくりには使わないため）
+MENU_PAGES: list[tuple[str, str]] = list(MAIN_PAGES)
 
 MAIN_SECTION_LABEL = "勤務表を作る"
-SUPPORT_SECTION_LABEL = "補助機能（勤怠CSV）"
 
 # ホーム画面に出す作業の流れ
 USAGE_STEPS: list[str] = [
