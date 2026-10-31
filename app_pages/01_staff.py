@@ -235,7 +235,7 @@ include_inactive = st.toggle("無効スタッフも表示する", value=False)
 staff_details = repo.list_staff_details(conn, include_inactive=include_inactive)
 staff_list = [d.staff for d in staff_details]
 
-tab_list, tab_create, tab_edit = st.tabs(["一覧・並び順", "スタッフを追加", "登録済みスタッフを編集"])
+tab_list, tab_create, tab_edit = st.tabs(["一覧・並び順", "スタッフを追加", "スタッフを編集"])
 
 with tab_list:
     if staff_details:

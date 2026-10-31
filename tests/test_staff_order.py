@@ -114,7 +114,7 @@ def test_staff_page_hides_inactive_staff_and_separates_add_and_edit(conn):
     gone = add(conn, "2")
     repo.deactivate_staff(conn, gone)
     at = AppTest.from_file(STAFF_PAGE, default_timeout=30).run()
-    assert [t.label for t in at.tabs] == ["一覧・並び順", "スタッフを追加", "登録済みスタッフを編集"]
+    assert [t.label for t in at.tabs] == ["一覧・並び順", "スタッフを追加", "スタッフを編集"]
     assert list(at.dataframe[0].value["氏名"]) == ["S1"]
     assert at.selectbox(key="edit_target_staff").options == ["1 S1"]
     at.toggle[0].set_value(True).run()
