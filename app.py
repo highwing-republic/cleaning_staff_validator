@@ -12,9 +12,11 @@ from src.navigation import (
     APP_SUBTITLE,
     APP_TITLE,
     HOME_PAGE_STATE_KEY,
+    HOME_ICON,
     MAIN_PAGES,
     MAIN_SECTION_LABEL,
     MENU_PAGES,
+    PAGE_ICONS,
     PAGE_GENERATE,
     PAGE_HOME,
     PAGE_OUTPUT,
@@ -56,14 +58,16 @@ def main() -> None:
     restore_failed = db_backup.status()["restore_failed"]
     if not restore_failed:
         _show_backup_status()
-    home_page = st.Page(home, title=PAGE_HOME, default=True, url_path=HOME_URL_PATH)
+    home_page = st.Page(home, title=PAGE_HOME, icon=HOME_ICON, default=True, url_path=HOME_URL_PATH)
     # スタッフ管理などから「ホーム・かんたん作成へ戻る」で戻れるようにする
     st.session_state[HOME_PAGE_STATE_KEY] = home_page
     navigation = st.navigation(
         {
             MAIN_SECTION_LABEL: [home_page],
-            "スタッフ設定": [st.Page(MAIN_PAGES[0][0], title="スタッフ管理")],
-            "詳細操作（必要なときだけ）": [st.Page(path, title=title) for path, title in MAIN_PAGES[1:]],
+            "スタッフ設定": [st.Page(MAIN_PAGES[0][0], title="スタッフ管理", icon=PAGE_ICONS[MAIN_PAGES[0][0]])],
+            "詳細操作（必要なときだけ）": [
+                st.Page(path, title=title, icon=PAGE_ICONS.get(path)) for path, title in MAIN_PAGES[1:]
+            ],
         }
     )
     if restore_failed:

@@ -39,6 +39,17 @@ MAIN_PAGES: list[tuple[str, str]] = [
     ("app_pages/08_output.py", HEADING_OUTPUT),
 ]
 
+# 左メニューのアイコン（Google の Material Symbols. 文字だけより目で探しやすくする）
+HOME_ICON = ":material/home:"
+PAGE_ICONS: dict[str, str] = {
+    "app_pages/01_staff.py": ":material/group:",
+    "app_pages/05_preferences.py": ":material/event_busy:",
+    "app_pages/03_requirements.py": ":material/hotel:",
+    "app_pages/06_generate.py": ":material/auto_awesome:",
+    "app_pages/07_schedule.py": ":material/edit_calendar:",
+    "app_pages/08_output.py": ":material/print:",
+}
+
 # 勤怠CSVの取込・検証の画面は削除した（今の勤務表づくりには使わないため）
 MENU_PAGES: list[tuple[str, str]] = list(MAIN_PAGES)
 
