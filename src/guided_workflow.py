@@ -7,7 +7,7 @@ import hashlib
 import json
 
 from src import repositories as repo, services
-from src.models import DailyRequirementInput, ScheduleGenerationResult
+from src.models import DailyRequirementInput, ScheduleGenerationResult, StaffDatePreferenceInput
 from src.period_utils import parse_date, period_dates
 from src.requirement_defaults import (
     WEEKDAY_REQUIRED_TOTAL,
@@ -236,35 +236,60 @@ def save_manual_change(conn, dates, staff_id, work_date, is_working, locked, exp
     with _write(conn):
         if input_fingerprint(conn, dates) != expected_fingerprint:
             raise WorkflowError("勤務表が変更されました。画面を読み直してから修正してください。")
-        detail = repo.get_staff_detail(conn, staff_id)
-        errors = services.validate_manual_schedule_changes(conn, staff_id, {work_date: (is_working, locked)})
-        if errors:
-            raise WorkflowError("\n".join(e.message for e in errors))
-        if is_working:
-            if not detail.staff.active:
-                raise WorkflowError("無効スタッフを新たに出勤にすることはできません。")
-            view = services.get_current_schedule(conn, [work_date]).day(work_date)
-            requirement = services.get_period_requirements(conn, [work_date])[0].requirement
-            count = sum(a.is_working for sid, a in view.assignments.items() if sid != staff_id) + 1
-            if requirement and requirement.max_total_staff is not None and count > requirement.max_total_staff:
-                raise WorkflowError("最大人数を超えます。別のスタッフの勤務または最大人数の設定を確認してください。")
-            limit = detail.staff.max_consecutive_days
-            if limit:
-                day = parse_date(work_date)
-                first, last = day - timedelta(days=limit), day + timedelta(days=limit)
-                worked = {a.work_date for a in repo.list_staff_schedule_assignments(conn, staff_id, first.isoformat(), last.isoformat()) if a.is_working}
-                worked.add(work_date)
-                consecutive = 1
-                for direction in (-1, 1):
-                    cursor = day + timedelta(days=direction)
-                    while cursor.isoformat() in worked:
-                        consecutive += 1
-                        cursor += timedelta(days=direction)
-                if consecutive > limit:
-                    raise WorkflowError(f"この変更では{consecutive}日連続の勤務になります。上限の{limit}日以内になるよう休みを入れてください。")
-        errors = services.save_manual_schedule_changes(conn, staff_id, {work_date: (is_working, locked)})
-        if errors:
-            raise WorkflowError("\n".join(e.message for e in errors))
+        _apply_manual_change(conn, staff_id, work_date, is_working, locked)
+
+
+def assign_suggestion(conn, dates, staff_id, work_date, needs_extra_day, expected_fingerprint):
+    """不足日の候補の人を出勤にする（自動作成で変えないよう固定する）.
+
+    その曜日がふだん休みの人は、本人に相談して出られることになった前提で、
+    その日の勤務希望に「通常休みだが勤務可能」を付けてから出勤にする（1トランザクション）。
+    """
+    if work_date not in dates:
+        raise WorkflowError("対象期間外の日付です。")
+    with _write(conn):
+        if input_fingerprint(conn, dates) != expected_fingerprint:
+            raise WorkflowError("勤務表が変更されました。画面を読み直してから修正してください。")
+        if needs_extra_day:
+            current = repo.get_staff_date_preference(conn, staff_id, work_date)
+            if current is not None and current.absolute_off:
+                raise WorkflowError("この日は「必ず休み」の希望が出ています。")
+            pref = replace(current, available_extra=True) if current else StaffDatePreferenceInput(
+                staff_id=staff_id, work_date=work_date, available_extra=True)
+            repo._upsert_preference(conn, pref, repo._now())  # 出勤の保存と同じトランザクションで
+        _apply_manual_change(conn, staff_id, work_date, True, True)
+
+
+def _apply_manual_change(conn, staff_id, work_date, is_working, locked):
+    detail = repo.get_staff_detail(conn, staff_id)
+    errors = services.validate_manual_schedule_changes(conn, staff_id, {work_date: (is_working, locked)})
+    if errors:
+        raise WorkflowError("\n".join(e.message for e in errors))
+    if is_working:
+        if not detail.staff.active:
+            raise WorkflowError("無効スタッフを新たに出勤にすることはできません。")
+        view = services.get_current_schedule(conn, [work_date]).day(work_date)
+        requirement = services.get_period_requirements(conn, [work_date])[0].requirement
+        count = sum(a.is_working for sid, a in view.assignments.items() if sid != staff_id) + 1
+        if requirement and requirement.max_total_staff is not None and count > requirement.max_total_staff:
+            raise WorkflowError("最大人数を超えます。別のスタッフの勤務または最大人数の設定を確認してください。")
+        limit = detail.staff.max_consecutive_days
+        if limit:
+            day = parse_date(work_date)
+            first, last = day - timedelta(days=limit), day + timedelta(days=limit)
+            worked = {a.work_date for a in repo.list_staff_schedule_assignments(conn, staff_id, first.isoformat(), last.isoformat()) if a.is_working}
+            worked.add(work_date)
+            consecutive = 1
+            for direction in (-1, 1):
+                cursor = day + timedelta(days=direction)
+                while cursor.isoformat() in worked:
+                    consecutive += 1
+                    cursor += timedelta(days=direction)
+            if consecutive > limit:
+                raise WorkflowError(f"この変更では{consecutive}日連続の勤務になります。上限の{limit}日以内になるよう休みを入れてください。")
+    errors = services.save_manual_schedule_changes(conn, staff_id, {work_date: (is_working, locked)})
+    if errors:
+        raise WorkflowError("\n".join(e.message for e in errors))
 
 
 def finalize_period(conn, dates, expected_fingerprint, acknowledge_issues=False):

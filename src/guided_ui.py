@@ -35,6 +35,13 @@ from src.schedule_output_display import (
     not_distributable_message,
 )
 from src.schedule_print import build_schedule_print_html
+from src.shortage_suggestions import (
+    collect_suggestions,
+    describe_shortage,
+    format_suggestion,
+    saved_shortages,
+    shortage_from_generation,
+)
 
 
 def _flash(message):
@@ -319,8 +326,17 @@ def _schedule(conn, start, days, dates):
         if result.shortage_days:
             coverage = {c.work_date: c for c in analyze_coverage(conn, dates)}
             role_names = {r["role_id"]: r["role_name"] for r in repo.list_roles(conn)}
+            skill_levels = {r.work_date: r.required_skill_level
+                            for r in repo.list_daily_requirements(conn, dates[0], dates[-1])}
+            working = {d: {a.staff_id for a in result.assignments if a.is_working and a.work_date == d} for d in dates}
+            suggestions = collect_suggestions(
+                conn, dates, [shortage_from_generation(day, skill_levels.get(day.work_date)) for day in result.shortage_days],
+                working,
+            )
             for day in result.shortage_days:
                 st.warning(explain_shortage(day, coverage.get(day.work_date), role_names))
+                _show_candidates(suggestions.get(day.work_date, []))
+            st.caption("候補の人に相談して出られることになったら、この案を保存したあと「出勤にする」で入れられます。")
         changes = []
         for a in result.assignments:
             view = current.day(a.work_date)
@@ -347,12 +363,59 @@ def _schedule(conn, start, days, dates):
     if current.existing_dates:
         st.markdown("**保存してある勤務表**")
         _saved_table(conn, dates)
+        _suggestion_section(conn, dates)
         _manual(conn, dates, current)
     if st.button("保存した勤務表で次へ", disabled=bool(current.missing_dates) or preview is not None):
         workflow.set_step(conn, start, days, 4)
         _clear_inputs()
         st.session_state["_guided_step"] = 4
         st.rerun()
+
+
+NO_CANDIDATE_MESSAGE = "候補になる人がいません（出勤済み・「必ず休み」・役割が合わない人を除いた結果です）。"
+
+
+def _show_candidates(items):
+    """勤務案（未保存）の不足日の候補. 表示だけ."""
+    if not items:
+        st.caption(NO_CANDIDATE_MESSAGE)
+        return
+    st.markdown("入ってもらえそうな人：\n" + "\n".join(f"- {format_suggestion(s)}" for s in items))
+
+
+def _suggestion_section(conn, dates):
+    """保存済みの勤務表で足りない日に、入ってもらえそうな人と「出勤にする」ボタン."""
+    shortages, working = saved_shortages(conn, dates)
+    if not shortages:
+        return
+    suggestions = collect_suggestions(conn, dates, shortages, working)
+    role_names = services.get_role_names(conn)
+    base = st.session_state.setdefault("gw_suggest_base", workflow.input_fingerprint(conn, dates))
+    st.markdown("**足りない日に入ってもらえそうな人**")
+    st.caption(
+        "本人に相談して出られることになったら「出勤にする」を押してください。"
+        "ふだん休みの曜日の人は、その日の勤務希望に「通常休みだが勤務可能」も付けます。"
+        "押した勤務は、作り直しても変わりません（固定）。連勤の上限を超える人・勤務時間が未登録の人は、"
+        "先に前後の休みや勤務時間を直してください。"
+    )
+    for shortage in shortages:
+        work_date = shortage.work_date
+        st.markdown(f"**{format_date_short(work_date)}**　{describe_shortage(shortage, role_names)}不足")
+        items = suggestions.get(work_date, [])
+        if not items:
+            st.caption(NO_CANDIDATE_MESSAGE)
+            continue
+        for item in items:
+            text_col, button_col = st.columns([5, 1.3], vertical_alignment="center")
+            text_col.markdown(f"- {format_suggestion(item)}")
+            if not item.can_apply:
+                continue
+            if button_col.button("出勤にする", key=f"gw_suggest_{item.staff_id}_{work_date}", width="stretch"):
+                workflow.assign_suggestion(conn, dates, item.staff_id, work_date, item.needs_extra_day, base)
+                st.session_state.pop("_guided_preview", None)
+                _clear_inputs()
+                _flash(f"{item.staff_name}さんを{format_date_short(work_date)}の出勤にしました。")
+                st.rerun()
 
 
 def _manual(conn, dates, current):
