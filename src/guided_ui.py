@@ -7,6 +7,15 @@ import streamlit as st
 
 from src import guided_workflow as workflow, repositories as repo, services
 from src.coverage_check import analyze_coverage, describe_problems, explain_shortage, problem_days
+from src.monthly_hours import (
+    WorkedShift,
+    format_hours,
+    format_month_total,
+    month_label,
+    monthly_totals,
+    months_of,
+    totals_by_month,
+)
 from src.daily_count_rows import (
     STAFF_COLUMN,
     build_schedule_table,
@@ -205,17 +214,50 @@ def _coverage_section(conn, dates):
             st.caption("必要人数をまだ保存していない日は、初期値で判定しています。")
 
 
+PERIOD_HOURS_COLUMN = "勤務時間"
+
+
+def _month_column(month):
+    return f"{month_label(month)}の合計"
+
+
+def _add_hours(rows, staff_ids, dates, period_shifts, month_totals):
+    """各行に「この期間の勤務時間」と「月ごとの合計（ほかの期間の保存済みも含む）」を足す."""
+    period = totals_by_month(period_shifts)
+    for row, staff_id in zip(rows, staff_ids):
+        row[PERIOD_HOURS_COLUMN] = format_hours(
+            sum(total.minutes for total in period.get(staff_id, {}).values())
+        )
+        for month in months_of(dates):
+            row[_month_column(month)] = format_month_total(month_totals.get(staff_id, {}).get(month))
+    return rows
+
+
 def _show_schedule_table(rows, dates, counts):
-    """勤務表を、先頭に日ごとの出勤人数・必要人数を付けて表示する（不足は赤、多すぎは黄色）."""
+    """勤務表を、先頭に日ごとの出勤人数・必要人数を付けて表示する（不足は赤、多すぎは黄色）.
+
+    スタッフ名と「○月の合計」は左に固定し、日付の後ろに勤務日数・勤務時間を置く。
+    """
     table = build_schedule_table(rows, dates, counts, format_date_short)
+    month_columns = [_month_column(m) for m in months_of(dates) if _month_column(m) in table.columns]
+    date_columns = [format_date_short(d) for d in dates]
+    trailing = [c for c in table.columns if c not in {STAFF_COLUMN, *month_columns, *date_columns}]
+    table = table[[STAFF_COLUMN, *month_columns, *date_columns, *trailing]].fillna("")
     styles = table_styles(table, dates, counts, format_date_short)
     st.caption("いちばん上の2行が、日ごとの出勤人数と必要人数です。足りない日は赤く表示します。")
+    if month_columns:
+        st.caption(
+            f"「{'」「'.join(month_columns)}」は、その月にすでに保存した勤務と、この勤務表の勤務を"
+            "合わせた時間です（勤務表の開始〜終了の時間で数え、休憩は差し引いていません）。"
+        )
     st.dataframe(
         table.style.apply(lambda _: styles, axis=None),
         hide_index=True,
         width="stretch",
-        # 横に動かしても誰の行か分かるよう、スタッフ名の列を固定する
-        column_config={STAFF_COLUMN: st.column_config.Column(pinned=True)},
+        # 横に動かしても誰の行か・月の合計が分かるよう、スタッフ名と月の合計の列を固定する
+        column_config={
+            column: st.column_config.Column(pinned=True) for column in [STAFF_COLUMN, *month_columns]
+        },
     )
 
 
@@ -225,6 +267,14 @@ def _saved_table(conn, dates):
              **{format_date_short(d): row.cells.get(d, "未作成") for d in dates},
              "勤務日数": row.working_days} for row in export.staff_rows]
     if rows:
+        schedule = services.get_current_schedule(conn, dates)
+        period_shifts = [
+            WorkedShift(sid, view.work_date, a.start_time, a.end_time)
+            for view in schedule.days if view.exists
+            for sid, a in view.assignments.items() if a.is_working
+        ]
+        _add_hours(rows, [row.staff.staff_id for row in export.staff_rows], dates,
+                   period_shifts, monthly_totals(conn, dates))
         _show_schedule_table(rows, dates, counts_from_validation(export.validation))
     return export
 
@@ -253,6 +303,10 @@ def _schedule(conn, start, days, dates):
             cells = {a.work_date: f"{a.start_time}–{a.end_time}" if a.is_working else "休" for a in result.assignments if a.staff_id == summary.staff_id}
             rows.append({"スタッフ": summary.staff_name, **{format_date_short(d): cells[d] for d in dates}, "勤務日数": summary.scheduled_days})
         maximums = {r.work_date: r.max_total_staff for r in repo.list_daily_requirements(conn, dates[0], dates[-1])}
+        preview_shifts = [WorkedShift(a.staff_id, a.work_date, a.start_time, a.end_time)
+                          for a in result.assignments if a.is_working]
+        _add_hours(rows, [s.staff_id for s in result.staff_summaries], dates,
+                   preview_shifts, monthly_totals(conn, dates, preview_shifts))
         _show_schedule_table(rows, dates, counts_from_generation(result, maximums))
         if result.shortage_days:
             coverage = {c.work_date: c for c in analyze_coverage(conn, dates)}
