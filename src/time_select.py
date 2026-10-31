@@ -17,6 +17,9 @@ HOUR_CHOICES: tuple[int, ...] = tuple(range(5, 24))
 MINUTE_CHOICES: tuple[str, ...] = ("00", "30")
 DEFAULT_MINUTE = "00"
 UNSET_LABEL = "未設定"
+# 「未設定」の選択肢の値. None にすると Streamlit の AppTest から選べないため空文字にする
+# （画面から返す値・保存する値は従来どおり None）
+UNSET_HOUR = ""
 
 
 def split_time(value: object) -> tuple[int | None, str]:
@@ -28,20 +31,20 @@ def split_time(value: object) -> tuple[int | None, str]:
     return int(hour), minute
 
 
-def join_time(hour: int | None, minute: str) -> str | None:
-    """(時, 分) を 'HH:MM' にする. 時が未設定なら None."""
-    if hour is None:
+def join_time(hour: int | str | None, minute: str) -> str | None:
+    """(時, 分) を 'HH:MM' にする. 時が未設定（None / UNSET_HOUR）なら None."""
+    if hour is None or hour == UNSET_HOUR:
         return None
     return f"{hour:02d}:{minute}"
 
 
-def hour_options(current: object, allow_unset: bool = True) -> list[int | None]:
-    """時の選択肢. 保存済みの時が範囲外なら加える."""
+def hour_options(current: object, allow_unset: bool = True) -> list[int | str]:
+    """時の選択肢（先頭が「未設定」= UNSET_HOUR）. 保存済みの時が範囲外なら加える."""
     hours = list(HOUR_CHOICES)
     current_hour, _ = split_time(current)
     if current_hour is not None and current_hour not in hours:
         hours = sorted([*hours, current_hour])
-    return [None, *hours] if allow_unset else hours
+    return [UNSET_HOUR, *hours] if allow_unset else hours
 
 
 def minute_options(current: object) -> list[str]:
@@ -53,8 +56,8 @@ def minute_options(current: object) -> list[str]:
     return minutes
 
 
-def format_hour(hour: int | None) -> str:
-    return UNSET_LABEL if hour is None else f"{hour}時"
+def format_hour(hour: int | str | None) -> str:
+    return UNSET_LABEL if hour is None or hour == UNSET_HOUR else f"{hour}時"
 
 
 def format_minute(minute: str) -> str:
@@ -76,8 +79,8 @@ def time_select(
     hours = hour_options(value, allow_unset=allow_unset)
     minutes = minute_options(value)
     current_hour, current_minute = split_time(value)
-    if current_hour is None and not allow_unset:
-        current_hour = hours[0]
+    if current_hour is None:
+        current_hour = UNSET_HOUR if allow_unset else hours[0]
 
     hour_col, minute_col = st.columns([3, 2])
     with hour_col:

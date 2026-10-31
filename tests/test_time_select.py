@@ -5,6 +5,7 @@ import pytest
 from src.time_select import (
     HOUR_CHOICES,
     MINUTE_CHOICES,
+    UNSET_HOUR,
     format_hour,
     format_minute,
     hour_options,
@@ -33,7 +34,7 @@ def test_split_time(value, expected):
 
 @pytest.mark.parametrize(
     ("hour", "minute", "expected"),
-    [(9, "00", "09:00"), (15, "30", "15:30"), (None, "30", None)],
+    [(9, "00", "09:00"), (15, "30", "15:30"), (None, "30", None), (UNSET_HOUR, "00", None)],
 )
 def test_join_time(hour, minute, expected):
     assert join_time(hour, minute) == expected
@@ -41,7 +42,7 @@ def test_join_time(hour, minute, expected):
 
 def test_hour_options_start_with_unset():
     options = hour_options(None)
-    assert options[0] is None
+    assert options[0] == UNSET_HOUR
     assert options[1:] == list(HOUR_CHOICES)
 
 
@@ -51,7 +52,7 @@ def test_hour_options_without_unset():
 
 def test_hour_options_keep_a_saved_hour_outside_the_range():
     options = hour_options("04:30")
-    assert options[0] is None
+    assert options[0] == UNSET_HOUR
     assert options[1] == 4
     assert options[1:] == sorted(options[1:])
 
@@ -63,5 +64,6 @@ def test_minute_options_keep_a_saved_odd_minute():
 
 def test_labels():
     assert format_hour(None) == "未設定"
+    assert format_hour(UNSET_HOUR) == "未設定"
     assert format_hour(9) == "9時"
     assert format_minute("30") == "30分"

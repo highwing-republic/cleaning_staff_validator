@@ -49,6 +49,14 @@ conn = open_connection()
 roles = repo.list_roles(conn)
 role_ids = [r["role_id"] for r in roles]
 role_name_by_id = {r["role_id"]: r["role_name"] for r in roles}
+
+# 新規登録の初期値: いちばん人数の多いクリーナー、多くの人と同じ 9:00〜15:30（曜日は人によって違うので空欄）
+DEFAULT_ROLE_CODE = "CLEANER"
+DEFAULT_START_TIME = "09:00"
+DEFAULT_END_TIME = "15:30"
+default_role_index = next(
+    (i for i, r in enumerate(roles) if r["role_code"] == DEFAULT_ROLE_CODE), 0
+)
 skill_options = list(range(SKILL_LEVEL_MIN, SKILL_LEVEL_MAX + 1))
 special_skill_name_by_id = services.get_special_skill_names(conn)
 
@@ -214,6 +222,7 @@ with st.form("create_staff_form", clear_on_submit=True):
     department = st.text_input("部門", value="清掃")
     role_id = st.selectbox(
         "ロール", options=role_ids,
+        index=default_role_index,
         format_func=lambda rid: role_name_by_id.get(rid, str(rid)),
     )
     skill_level = st.selectbox(
@@ -224,7 +233,7 @@ with st.form("create_staff_form", clear_on_submit=True):
     )
     new_special_skill_ids = _special_skill_multiselect("create_special_skills")
     new_weekdays = _weekday_checkboxes("create")
-    new_start, new_end = _standard_time_inputs("create", None, None)
+    new_start, new_end = _standard_time_inputs("create", DEFAULT_START_TIME, DEFAULT_END_TIME)
     new_target_days, new_max_consecutive = _work_volume_inputs("create")
     new_max_days = None  # 入力欄なし（勤務表づくりに使っていない）
 
