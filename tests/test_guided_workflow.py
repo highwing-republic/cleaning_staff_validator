@@ -96,6 +96,23 @@ def test_confirm_inputs_succeeds_without_preference_rows(conn):
     assert workflow.get_progress(conn, DATES[0], len(DATES)) == 3
 
 
+def test_default_base_counts_are_the_usual_crew(conn):
+    """基本人数の初期値は、役割の最低人数の合計（リーダー1・チェッカー1・クリーナー5 = 7名）."""
+    assert workflow.get_defaults(conn) == (7, 7)
+
+
+def test_first_time_counts_also_save_the_default_role_minimums(conn):
+    add_staff(conn)
+    dates = DATES[:2]
+    fingerprint = workflow.review_fingerprint(conn, dates, "requirements")
+
+    workflow.save_staff_counts(conn, dates, {dates[0]: 7, dates[1]: 8}, fingerprint)
+
+    counts = {(r.work_date, r.role_id): r.required_count
+              for r in repo.list_role_requirements(conn, dates[0], dates[-1])}
+    assert counts == {(d, role): n for d in dates for role, n in ((1, 1), (2, 1), (3, 5))}
+
+
 def test_simple_staff_counts_preserve_advanced_requirement_fields(conn):
     add_staff(conn)
     dates = DATES[:1]
