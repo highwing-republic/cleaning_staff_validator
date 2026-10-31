@@ -148,7 +148,7 @@ def test_work_days_column():
 
 def test_columns_keep_the_date_order():
     _, _, table = make_table()
-    assert list(table.columns) == ["スタッフ", "11/2(月)", "11/3(火)", "勤務日数"]
+    assert list(table.columns) == ["スタッフ", "11/2(月)", "11/3(火・祝)", "勤務日数"]
 
 
 def test_unknown_day_is_blank():

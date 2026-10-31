@@ -72,13 +72,24 @@ def format_period(start_date: str, days: int) -> str:
     return f"{dates[0]} ～ {dates[-1]}（{days}日間）"
 
 
+HOLIDAY_MARK = "祝"
+
+
+def weekday_label(day: date) -> str:
+    """'火' のような曜日. 祝日は '火・祝'."""
+    from src.jp_holidays import is_holiday
+
+    label = WEEKDAY_LABELS_JA[day.weekday()]
+    return f"{label}・{HOLIDAY_MARK}" if is_holiday(day) else label
+
+
 def format_date_short(work_date: str) -> str:
-    """'2026-10-25' を '10/25(日)' にする（期間グリッドの見出し用）.
+    """'2026-10-25' を '10/25(日)' にする（期間グリッドの見出し用）. 祝日は '11/3(火・祝)'.
 
     不正な日付は入力値をそのまま返す（画面を落とさない）。
     """
     day = parse_date(work_date)
     if day is None:
         return str(work_date)
-    return f"{day.month}/{day.day}({WEEKDAY_LABELS_JA[day.weekday()]})"
+    return f"{day.month}/{day.day}({weekday_label(day)})"
 

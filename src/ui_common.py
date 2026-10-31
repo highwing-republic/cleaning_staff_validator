@@ -151,12 +151,13 @@ def format_year_month_ja(year_month: str) -> str:
 
 
 def format_date_ja(work_date: str) -> str:
-    """'YYYY-MM-DD' を '10月5日(月)' のように表示する."""
-    from src.month_utils import weekday_index
+    """'YYYY-MM-DD' を '10月5日(月)' のように表示する. 祝日は '11月3日(火・祝)'."""
+    from datetime import date as _date
+
+    from src.period_utils import weekday_label
 
     _, month, day = work_date.split("-")
-    wd = WEEKDAY_LABELS_JA[weekday_index(work_date)]
-    return f"{int(month)}月{int(day)}日({wd})"
+    return f"{int(month)}月{int(day)}日({weekday_label(_date.fromisoformat(work_date))})"
 
 
 def show_errors(errors: list[ValidationError]) -> None:

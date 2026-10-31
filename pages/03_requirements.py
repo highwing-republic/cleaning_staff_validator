@@ -19,6 +19,7 @@ from src import repositories as repo
 from src import services
 from src.constants import SKILL_LEVEL_MAX, SKILL_LEVEL_MIN
 from src.models import DailyRequirementInput, RoleRequirementInput
+from src.jp_holidays import DAY_COLOR_HOLIDAY, day_color, holiday_name
 from src.navigation import (
     HEADING_REQUIREMENTS,
     PAGE_GENERATE,
@@ -223,13 +224,12 @@ def _day_inputs(work_date: str) -> tuple[DailyRequirementInput | None, list[Role
 
 
 def _date_label(work_date: str) -> str:
-    """土曜は青、日曜は赤で日付を出す."""
+    """土曜は青、日曜・祝日は赤で日付を出す. 祝日は名前も添える."""
     label = format_date_short(work_date)
-    if label.endswith("(土)"):
-        return f"**:blue[{label}]**"
-    if label.endswith("(日)"):
-        return f"**:red[{label}]**"
-    return f"**{label}**"
+    color = day_color(work_date)
+    text = f"**:{color}[{label}]**" if color else f"**{label}**"
+    name = holiday_name(work_date)
+    return f"{text}  \n:{DAY_COLOR_HOLIDAY}[{name}]" if name else text
 
 
 def _breakdown_text(view) -> str:
@@ -298,13 +298,13 @@ def _simple_section() -> None:
     st.caption(
         "日ごとに「必要人数」（最低これだけ必要な清掃スタッフの人数）を入れて保存してください。"
         "役割の内訳は人数から自動で決まります（リーダー1名・チェッカー1名・残りをクリーナー。"
-        "例: 7名→クリーナー5名、6名→クリーナー4名）。予約室数と備考は空欄のままでも大丈夫です。"
+        "例: 8名→クリーナー6名、7名→クリーナー5名）。予約室数と備考は空欄のままでも大丈夫です。"
     )
     unsaved = count_undefined(views)
     if unsaved:
         st.info(
             f"まだ保存していない日が{unsaved}日あります。ふだんの人数"
-            f"（平日{WEEKDAY_REQUIRED_TOTAL}名・土日{WEEKEND_REQUIRED_TOTAL}名）を入れてあるので、"
+            f"（平日{WEEKDAY_REQUIRED_TOTAL}名・土日祝{WEEKEND_REQUIRED_TOTAL}名）を入れてあるので、"
             "変わる日だけ直して「保存する」を押してください。"
         )
 

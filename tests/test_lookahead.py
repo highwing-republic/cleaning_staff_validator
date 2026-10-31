@@ -159,8 +159,8 @@ def test_regeneration_request_uses_defaults_for_unsaved_lookahead_days(conn):
     request = services.build_regeneration_request(conn, dates)
     assert [d.work_date for d in request.lookahead_days] == ["2026-11-16", "2026-11-17"]
     monday = request.lookahead_days[0]
-    assert monday.requirement_is_set and monday.required_total_staff == 7
-    assert sorted(monday.role_requirements.values()) == [1, 1, 5]
+    assert monday.requirement_is_set and monday.required_total_staff == 8
+    assert sorted(monday.role_requirements.values()) == [1, 1, 6]
     assert monday.max_total_staff is None
     # 先読みの日の勤務条件も渡す（休み希望を見るため）
     assert "2026-11-16" in request.staff[0].day_conditions
