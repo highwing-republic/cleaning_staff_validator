@@ -31,6 +31,16 @@ from src.navigation import (
     PAGE_PREFERENCES,
     PAGE_SCHEDULE,
 )
+from src.monthly_hours import (
+    HOURS_NOTE,
+    WorkedShift,
+    format_hours,
+    format_month_total,
+    month_column,
+    monthly_totals,
+    months_of,
+    totals_by_month,
+)
 from src.period_utils import format_date_short, period_dates
 from src.ui_common import open_connection, select_period, show_errors
 
@@ -91,20 +101,53 @@ if schedule.missing_dates:
 st.subheader("現在の勤務表")
 st.caption(f"{LOCK_MARK} は固定、{MANUAL_MARK} は手修正を示します。確定した日は列の状態が「確定」になります。")
 
-status_row = {"スタッフ": "― 状態 ―"}
+# 月ごとの合計（その月に保存した勤務すべて）と、この期間の勤務時間
+months = months_of(dates)
+month_columns = [month_column(m) for m in months]
+month_totals = monthly_totals(conn, dates)
+period_totals = totals_by_month(
+    WorkedShift(staff_id, view.work_date, a.start_time, a.end_time)
+    for view in schedule.days
+    if view.exists
+    for staff_id, a in view.assignments.items()
+    if a.is_working
+)
+
+status_row = {"スタッフ": "― 状態 ―", **{column: "" for column in month_columns}}
 for view in schedule.days:
     status_row[format_date_short(view.work_date)] = format_schedule_day_status(view)
+status_row["勤務時間"] = ""
 
 grid_rows = [status_row]
 for detail in staff_details:
-    row = {"スタッフ": detail.staff.staff_name}
+    staff_id = detail.staff.staff_id
+    row = {
+        "スタッフ": detail.staff.staff_name,
+        **{
+            month_column(m): format_month_total(month_totals.get(staff_id, {}).get(m))
+            for m in months
+        },
+    }
     for view in schedule.days:
         row[format_date_short(view.work_date)] = format_schedule_cell(
-            view.assignments.get(detail.staff.staff_id), view.is_finalized
+            view.assignments.get(staff_id), view.is_finalized
         )
+    row["勤務時間"] = format_hours(
+        sum(total.minutes for total in period_totals.get(staff_id, {}).values())
+    )
     grid_rows.append(row)
 
-st.dataframe(pd.DataFrame(grid_rows), width="stretch", hide_index=True)
+st.caption(
+    f"「{'」「'.join(month_columns)}」は、その月に保存した勤務の合計、"
+    f"「勤務時間」はこの期間の合計です（{HOURS_NOTE}）。"
+)
+st.dataframe(
+    pd.DataFrame(grid_rows),
+    width="stretch",
+    hide_index=True,
+    # 横に動かしても誰の行か・月の合計が分かるよう、スタッフ名と月の合計の列を固定する
+    column_config={column: st.column_config.Column(pinned=True) for column in ["スタッフ", *month_columns]},
+)
 
 # ---------------------------------------------------------------------------
 # 手修正

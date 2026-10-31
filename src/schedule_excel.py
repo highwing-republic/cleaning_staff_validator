@@ -30,6 +30,7 @@ from src.export_excel import (
     write_header_row,
 )
 from src.models import ScheduleExport
+from src.monthly_hours import HOURS_NOTE, format_hours, format_month_total, month_column
 from src.period_utils import format_date_short
 from src.schedule_output_display import (
     DRAFT_NOTICE,
@@ -107,8 +108,12 @@ def _build_schedule_sheet(wb: Workbook, export: ScheduleExport) -> None:
     header_row = 5
     headers = ["スタッフ", "役割"]
     headers += [format_date_short(d) for d in dates]
-    headers += ["出勤日数", REMARKS_HEADER]
+    months = list(export.months)
+    # 出勤日数の後ろに、この期間の勤務時間と月ごとの合計（その月に保存した勤務すべて）を置く
+    headers += ["出勤日数", "勤務時間", *[month_column(m) for m in months], REMARKS_HEADER]
     write_header_row(ws, header_row, headers)
+    after_days = 4 + len(dates)  # 勤務時間の列
+    remarks_col = after_days + 1 + len(months)
 
     # 日付ごとの状態（確定／下書き／未作成）を列見出しの下に文字で書く
     status_row = header_row + 1
@@ -125,8 +130,8 @@ def _build_schedule_sheet(wb: Workbook, export: ScheduleExport) -> None:
             fill=weekday_fill(work_date),
             align_center=True,
         )
-    set_cell(ws, status_row, 3 + len(dates), None, align_center=True)
-    set_cell(ws, status_row, 4 + len(dates), None, align_center=True)
+    for col in range(3 + len(dates), remarks_col + 1):
+        set_cell(ws, status_row, col, None, align_center=True)
 
     for offset, row_data in enumerate(export.staff_rows):
         row = status_row + 1 + offset
@@ -142,7 +147,11 @@ def _build_schedule_sheet(wb: Workbook, export: ScheduleExport) -> None:
                 align_center=True,
             )
         set_cell(ws, row, 3 + len(dates), row_data.working_days, align_center=True)
-        set_cell(ws, row, 4 + len(dates), None)  # 手書き用の空欄（罫線だけ引く）
+        set_cell(ws, row, after_days, format_hours(row_data.period_minutes), align_center=True)
+        for offset_m, month in enumerate(months):
+            set_cell(ws, row, after_days + 1 + offset_m,
+                     format_month_total(row_data.month_totals.get(month)), align_center=True)
+        set_cell(ws, row, remarks_col, None)  # 手書き用の空欄（罫線だけ引く）
         ws.row_dimensions[row].height = _ROW_HEIGHT
 
     ws.row_dimensions[header_row].height = _ROW_HEIGHT
@@ -153,8 +162,14 @@ def _build_schedule_sheet(wb: Workbook, export: ScheduleExport) -> None:
         ws,
         [_STAFF_COLUMN_WIDTH, _ROLE_COLUMN_WIDTH]
         + [_DATE_COLUMN_WIDTH] * len(dates)
-        + [10, _REMARKS_COLUMN_WIDTH],
+        + [10, 10] + [16] * len(months) + [_REMARKS_COLUMN_WIDTH],
     )
+    if months:
+        note_row = status_row + 1 + len(export.staff_rows) + 1
+        ws.cell(row=note_row, column=1, value=(
+            f"「{'」「'.join(month_column(m) for m in months)}」は、その月に保存した勤務の合計です"
+            f"（{HOURS_NOTE}）。"
+        ))
     _setup_print(ws, freeze=f"C{status_row + 1}")
 
 

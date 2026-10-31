@@ -981,12 +981,29 @@ class SchedulePeriodValidationResult:
 
 
 @dataclass(frozen=True)
+class MonthTotal:
+    """1か月の勤務の合計（日数と分）. 時間は勤務表の開始〜終了で数える（休憩は差し引かない）."""
+
+    days: int = 0
+    minutes: int = 0
+
+    def __add__(self, other: "MonthTotal") -> "MonthTotal":
+        return MonthTotal(self.days + other.days, self.minutes + other.minutes)
+
+
+@dataclass(frozen=True)
 class ScheduleExportStaffRow:
-    """勤務表Excelの1行（スタッフ1名）. cells は work_date -> 表示文字列."""
+    """勤務表Excelの1行（スタッフ1名）. cells は work_date -> 表示文字列.
+
+    period_minutes はこの期間の勤務時間（分）、month_totals は 月('YYYY-MM') -> その月の合計
+    （期間の外の日に保存した勤務も含む）。
+    """
 
     staff: StaffInput
     role_name: str
     cells: dict[str, str] = field(default_factory=dict)
+    period_minutes: int = 0
+    month_totals: dict[str, MonthTotal] = field(default_factory=dict)
 
     @property
     def working_days(self) -> int:
@@ -1002,6 +1019,7 @@ class ScheduleExport:
     staff_rows: list[ScheduleExportStaffRow] = field(default_factory=list)
     role_names: dict[int, str] = field(default_factory=dict)
     exported_at: str | None = None
+    months: list[str] = field(default_factory=list)  # 期間が含む月（'YYYY-MM'）
 
 
 @dataclass(frozen=True)

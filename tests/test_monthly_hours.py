@@ -160,3 +160,79 @@ def test_step3_shows_month_totals_next_to_the_name(conn):
     assert row["11月の合計"] == f"{format_hours(390 * (worked + 1))}（{worked + 1}日）"
     assert row["勤務時間"] == format_hours(390 * worked)
     assert any("休憩は差し引いていません" in c.value for c in at.caption)
+
+
+# ---------------------------------------------------------------------------
+# 印刷・Excel・⑤ 勤務表調整
+# ---------------------------------------------------------------------------
+
+
+def saved_month(conn):
+    """10/30 と 11/2〜3 に勤務を保存し、期間 10/31〜11/13 で見る."""
+    sid = add_staff(conn, "1")
+    other = add_staff(conn, "2")
+    save_day(conn, "2026-10-30", {sid: ("09:00", "15:30"), other: None})  # 期間の外（10月）
+    save_day(conn, "2026-11-02", {sid: ("09:00", "15:30"), other: ("09:00", "13:00")})
+    save_day(conn, "2026-11-03", {sid: ("09:00", "13:00"), other: None})
+    return sid, other, period_dates("2026-10-31", 14)
+
+
+def test_schedule_export_carries_month_totals(conn):
+    from src import services
+
+    sid, other, period = saved_month(conn)
+    export = services.build_schedule_export(conn, period)
+    assert export.months == ["2026-10", "2026-11"]
+    rows = {row.staff.staff_id: row for row in export.staff_rows}
+    assert rows[sid].period_minutes == 390 + 240
+    assert rows[sid].month_totals == {"2026-10": MonthTotal(1, 390), "2026-11": MonthTotal(2, 630)}
+    assert rows[other].month_totals == {"2026-11": MonthTotal(1, 240)}
+
+
+def test_print_shows_month_totals(conn):
+    from src import services
+    from src.schedule_print import build_schedule_print_html
+
+    sid, _, period = saved_month(conn)
+    html = build_schedule_print_html(services.build_schedule_export(conn, period))
+    assert '<th scope="col" class="month-total">10月の合計</th>' in html
+    assert '<th scope="col" class="month-total">11月の合計</th>' in html
+    assert '<span class="shift-time">10.5時間</span><span class="shift-time">2日</span>' in html
+    assert "休憩は差し引いていません" in html
+
+
+def test_excel_shows_hours_and_month_totals(conn):
+    from io import BytesIO
+
+    from openpyxl import load_workbook
+
+    from src import services
+    from src.schedule_excel import SHEET_SCHEDULE
+
+    saved_month(conn)
+    period = period_dates("2026-10-31", 14)
+    ws = load_workbook(BytesIO(services.export_schedule_excel(conn, period)))[SHEET_SCHEDULE]
+    header_row = next(r for r in range(1, ws.max_row + 1) if ws.cell(row=r, column=1).value == "スタッフ")
+    headers = [c.value for c in ws[header_row]]
+    row = next(r for r in range(header_row + 1, ws.max_row + 1) if ws.cell(row=r, column=1).value == "S1")
+    values = dict(zip(headers, [c.value for c in ws[row]]))
+    assert values["勤務時間"] == "10.5時間"
+    assert values["10月の合計"] == "6.5時間（1日）"
+    assert values["11月の合計"] == "10.5時間（2日）"
+    assert headers[-1] == "当日変更・備考"
+
+
+def test_schedule_page_grid_shows_month_totals(conn):
+    saved_month(conn)
+    page = str(Path(__file__).resolve().parents[1] / "pages" / "07_schedule.py")
+    at = AppTest.from_file(page, default_timeout=60)
+    at.session_state["schedule_period_start"] = date(2026, 10, 31)
+    at.session_state["schedule_period_days"] = 14
+    at.run()
+    assert not at.exception
+    grid = at.dataframe[0].value
+    assert list(grid.columns[:3]) == ["スタッフ", "10月の合計", "11月の合計"]
+    row = grid[grid["スタッフ"] == "S1"].iloc[0]
+    assert row["10月の合計"] == "6.5時間（1日）"
+    assert row["11月の合計"] == "10.5時間（2日）"
+    assert row["勤務時間"] == "10.5時間"
