@@ -68,6 +68,11 @@ STAFF_ADDED_COLUMNS: tuple[tuple[str, str], ...] = (
         "max_consecutive_days INTEGER NULL "
         "CHECK (max_consecutive_days IS NULL OR max_consecutive_days > 0)",
     ),
+    (
+        # 並び順（スタッフ管理で上下に並べ替える. 勤務表・印刷・Excel もこの順）
+        "display_order",
+        "display_order INTEGER NULL",
+    ),
 )
 
 
@@ -153,6 +158,7 @@ def initialize_database(conn: sqlite3.Connection) -> None:
             """
         )
         _migrate_staff_columns(conn)
+        _fill_staff_display_order(conn)
 
         # 総合スキル(staff.skill_level)とは別概念。「力仕事可」等をstaffの列にせず多対多で持つ
         conn.execute(
@@ -454,6 +460,25 @@ def _migrate_staff_columns(conn: sqlite3.Connection) -> None:
     for column, ddl in STAFF_ADDED_COLUMNS:
         if column not in existing:
             conn.execute(f"ALTER TABLE staff ADD COLUMN {ddl}")
+
+
+def _fill_staff_display_order(conn: sqlite3.Connection) -> None:
+    """並び順のないスタッフに並び順を付ける（冪等）.
+
+    並び順の列を足したばかりのDBでは、それまでの勤務表・印刷と同じ
+    「役割 → 従業員番号」の順にする。並び順のある人の後ろに続ける。
+    """
+    missing = conn.execute(
+        "SELECT staff_id FROM staff WHERE display_order IS NULL "
+        "ORDER BY role_id, employee_code, staff_id"
+    ).fetchall()
+    if not missing:
+        return
+    start = conn.execute("SELECT COALESCE(MAX(display_order), 0) FROM staff").fetchone()[0]
+    conn.executemany(
+        "UPDATE staff SET display_order = ? WHERE staff_id = ?",
+        [(start + i, row[0]) for i, row in enumerate(missing, start=1)],
+    )
 
 
 def _migrate_daily_requirement_columns(conn: sqlite3.Connection) -> None:
