@@ -121,13 +121,14 @@ def test_menu_is_ordered_by_the_work_flow(db_path):
     """§5: 若女将が使う順番に並べる（ファイル名の番号順ではない）."""
     import app
 
+    # 詳細操作には番号を付けない（ホームのかんたん作成の①〜④と意味が重ならないように）
     assert [title for _, title in app.MAIN_PAGES] == [
-        "① スタッフ管理",
-        "② 勤務希望",
-        "③ 予約・必要人数",
-        "④ シフト生成",
-        "⑤ 勤務表調整",
-        "⑥ 勤務表出力",
+        "スタッフ管理",
+        "勤務希望",
+        "予約・必要人数",
+        "シフト生成",
+        "勤務表調整",
+        "勤務表出力",
     ]
     assert [path for path, _ in app.MAIN_PAGES] == [
         "app_pages/01_staff.py",
@@ -1892,6 +1893,8 @@ def test_generate_page_does_not_save_before_the_button_is_pressed(db_path):
     _click_generate(at)
     assert _schedule_counts(db_path) == (0, 0, 0)
     assert any(b.label == SAVE_DRAFT_BUTTON for b in at.button)
+    # 保存できることを、結果のすぐ下で先に知らせる
+    assert any("この勤務案は保存できます" in s.value for s in at.success)
 
 
 def test_generate_page_saves_the_draft_schedule(db_path):
@@ -1932,6 +1935,7 @@ def test_generate_page_does_not_offer_to_overwrite_an_existing_schedule(db_path)
     _click_generate(at)
     assert all(b.label != SAVE_DRAFT_BUTTON for b in at.button)
     assert any("勤務表調整" in i.value for i in at.info)
+    assert any("この画面からは保存しません" in i.value for i in at.info)
     assert _schedule_counts(db_path) == before
 
 
@@ -2919,7 +2923,7 @@ def test_staff_page_empty_state_tells_what_to_do(db_path):
     """§18: スタッフ0人のときに、次にすることを示す."""
     at = _open_staff_page()
     assert any("登録されていません" in i.value for i in at.info)
-    assert any("新規スタッフ登録" in i.value for i in at.info)
+    assert any("スタッフを追加" in i.value for i in at.info)
 
 
 def test_staff_page_guides_to_the_next_step(db_path):

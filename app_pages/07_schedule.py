@@ -139,7 +139,7 @@ for detail in staff_details:
 
 st.caption(
     f"「{'」「'.join(month_columns)}」は、その月に保存した勤務の合計、"
-    f"「勤務時間」はこの期間の合計です（{HOURS_NOTE}）。"
+    f"「勤務時間」はこの期間の合計です（{HOURS_NOTE}）。表は横に動かして確認できます（名前の列は固定しています）。"
 )
 st.dataframe(
     pd.DataFrame(grid_rows),

@@ -227,254 +227,266 @@ def _order_section() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 一覧
+# 一覧・追加・編集はタブで分ける（追加と編集の長いフォームを同時に出さない）
 # ---------------------------------------------------------------------------
 
-st.subheader("一覧")
-include_inactive = st.toggle("無効スタッフも表示する", value=True)
+# 無効にした人はふだん隠す（一覧と編集の両方に効く）
+include_inactive = st.toggle("無効スタッフも表示する", value=False)
 staff_details = repo.list_staff_details(conn, include_inactive=include_inactive)
 staff_list = [d.staff for d in staff_details]
 
-if staff_details:
-    table = pd.DataFrame(
-        [
-            {
-                "従業員番号": d.staff.employee_code,
-                "氏名": d.staff.staff_name,
-                "部門": d.staff.department or "",
-                "ロール": role_name_by_id.get(d.staff.role_id, d.staff.role_id),
-                "代わりにできる役割": " / ".join(
-                    role_name_by_id.get(r, str(r)) for r in d.substitute_role_ids
-                ),
-                "総合スキル": format_skill_level(d.staff.skill_level),
-                "特殊スキル": " / ".join(
-                    special_skill_name_by_id.get(i, str(i)) for i in d.special_skill_ids
-                ),
-                "通常勤務曜日": format_weekdays(d.weekdays),
-                "通常勤務時間": format_standard_work_time(
-                    d.staff.standard_start_time, d.staff.standard_end_time
-                ),
-                TARGET_DAYS_LABEL: format_target_days_per_week(d.staff.target_days_per_week),
-                "有効": "有効" if d.staff.active else "無効",
-            }
+tab_list, tab_create, tab_edit = st.tabs(["一覧・並び順", "スタッフを追加", "登録済みスタッフを編集"])
+
+with tab_list:
+    if staff_details:
+        table = pd.DataFrame(
+            [
+                {
+                    "従業員番号": d.staff.employee_code,
+                    "氏名": d.staff.staff_name,
+                    "部門": d.staff.department or "",
+                    "ロール": role_name_by_id.get(d.staff.role_id, d.staff.role_id),
+                    "代わりにできる役割": " / ".join(
+                        role_name_by_id.get(r, str(r)) for r in d.substitute_role_ids
+                    ),
+                    "総合スキル": format_skill_level(d.staff.skill_level),
+                    "特殊スキル": " / ".join(
+                        special_skill_name_by_id.get(i, str(i)) for i in d.special_skill_ids
+                    ),
+                    "通常勤務曜日": format_weekdays(d.weekdays),
+                    "通常勤務時間": format_standard_work_time(
+                        d.staff.standard_start_time, d.staff.standard_end_time
+                    ),
+                    TARGET_DAYS_LABEL: format_target_days_per_week(d.staff.target_days_per_week),
+                    "有効": "有効" if d.staff.active else "無効",
+                }
+                for d in staff_details
+            ]
+        )
+        st.caption("表は横に動かして確認できます。")
+        st.dataframe(
+            table, width="stretch", hide_index=True,
+            column_config={"氏名": st.column_config.Column(pinned=True)},
+        )
+        setting_warnings = [
+            (d.staff.staff_name, warning)
             for d in staff_details
+            if d.staff.active
+            for warning in staff_setting_warnings(d)
         ]
-    )
-    st.dataframe(table, width="stretch", hide_index=True)
-    setting_warnings = [
-        (d.staff.staff_name, warning)
-        for d in staff_details
-        if d.staff.active
-        for warning in staff_setting_warnings(d)
-    ]
-    if setting_warnings:
-        with st.expander(f"設定を確認してください（{len(setting_warnings)}件）", expanded=True):
-            for name, warning in setting_warnings:
-                st.markdown(f"- **{name}**：{warning}")
-    _order_section()
-else:
-    st.info(
-        "スタッフがまだ登録されていません。"
-        "下の「新規スタッフ登録」から、通常の勤務曜日と勤務時間もあわせて登録してください。"
-    )
+        if setting_warnings:
+            with st.expander(f"設定を確認してください（{len(setting_warnings)}件）", expanded=True):
+                for name, warning in setting_warnings:
+                    st.markdown(f"- **{name}**：{warning}")
+        _order_section()
+    else:
+        st.info(
+            "スタッフがまだ登録されていません。"
+            "「スタッフを追加」から、通常の勤務曜日と勤務時間もあわせて登録してください。"
+        )
 
 # ---------------------------------------------------------------------------
 # 新規作成
 # ---------------------------------------------------------------------------
 
-st.subheader("新規スタッフ登録")
-with st.form("create_staff_form", clear_on_submit=True):
-    # 既存テスト（AppTest）が text_input[0]/[1] と selectbox[0]/[1] を位置で参照するため、
-    # 従業員番号・氏名・ロール・スキルはこの順のまま保つ
-    employee_code = st.text_input("従業員番号")
-    name = st.text_input("氏名")
-    department = st.text_input("部門", value="清掃")
-    role_id = st.selectbox(
-        "ロール", options=role_ids,
-        index=default_role_index,
-        format_func=lambda rid: role_name_by_id.get(rid, str(rid)),
-    )
-    new_substitute_role_ids = _substitute_role_multiselect("create_substitute_roles")
-    skill_level = st.selectbox(
-        "総合スキル",
-        options=skill_options,
-        index=SKILL_LEVEL_DEFAULT - SKILL_LEVEL_MIN,
-        format_func=format_skill_level,
-    )
-    new_special_skill_ids = _special_skill_multiselect("create_special_skills")
-    new_weekdays = _weekday_checkboxes("create")
-    new_start, new_end = _standard_time_inputs("create", DEFAULT_START_TIME, DEFAULT_END_TIME)
-    new_target_days, new_max_consecutive = _work_volume_inputs("create")
-    new_max_days = None  # 入力欄なし（勤務表づくりに使っていない）
-
-    submitted = st.form_submit_button("登録")
-
-    if submitted:
-        errors = services.validate_staff_master_input(
-            conn,
-            employee_code,
-            name,
-            int(skill_level),
-            standard_start_time=new_start,
-            standard_end_time=new_end,
-            target_days_per_week=new_target_days,
-            max_days_per_period=new_max_days,
-            max_consecutive_days=new_max_consecutive,
-            weekdays=new_weekdays,
-            special_skill_ids=new_special_skill_ids,
+with tab_create:
+    with st.form("create_staff_form", clear_on_submit=True):
+        # 既存テスト（AppTest）が text_input[0]/[1] と selectbox[0]/[1] を位置で参照するため、
+        # 従業員番号・氏名・ロール・スキルはこの順のまま保つ
+        employee_code = st.text_input("従業員番号")
+        name = st.text_input("氏名")
+        department = st.text_input("部門", value="清掃")
+        role_id = st.selectbox(
+            "ロール", options=role_ids,
+            index=default_role_index,
+            format_func=lambda rid: role_name_by_id.get(rid, str(rid)),
         )
-        if not errors and _employee_code_taken(employee_code.strip()):
-            st.error(f"従業員番号「{employee_code.strip()}」はすでに登録されています。")
-        elif errors:
-            for e in errors:
-                st.error(e.message)
-        else:
-            try:
-                new_id = repo.create_staff(
-                    conn,
-                    employee_code.strip(),
-                    name.strip(),
-                    role_id,
-                    int(skill_level),
-                    _optional_text(department),
-                    standard_start_time=_optional_text(new_start),
-                    standard_end_time=_optional_text(new_end),
-                    target_days_per_week=new_target_days,
-                    max_days_per_period=new_max_days,
-                    max_consecutive_days=new_max_consecutive,
-                    weekdays=new_weekdays,
-                    special_skill_ids=new_special_skill_ids,
-                    substitute_role_ids=new_substitute_role_ids,
-                )
-            except sqlite3.IntegrityError:
+        new_substitute_role_ids = _substitute_role_multiselect("create_substitute_roles")
+        skill_level = st.selectbox(
+            "総合スキル",
+            options=skill_options,
+            index=SKILL_LEVEL_DEFAULT - SKILL_LEVEL_MIN,
+            format_func=format_skill_level,
+        )
+        new_special_skill_ids = _special_skill_multiselect("create_special_skills")
+        new_weekdays = _weekday_checkboxes("create")
+        new_start, new_end = _standard_time_inputs("create", DEFAULT_START_TIME, DEFAULT_END_TIME)
+        new_target_days, new_max_consecutive = _work_volume_inputs("create")
+        new_max_days = None  # 入力欄なし（勤務表づくりに使っていない）
+
+        submitted = st.form_submit_button("登録")
+
+        if submitted:
+            errors = services.validate_staff_master_input(
+                conn,
+                employee_code,
+                name,
+                int(skill_level),
+                standard_start_time=new_start,
+                standard_end_time=new_end,
+                target_days_per_week=new_target_days,
+                max_days_per_period=new_max_days,
+                max_consecutive_days=new_max_consecutive,
+                weekdays=new_weekdays,
+                special_skill_ids=new_special_skill_ids,
+            )
+            if not errors and _employee_code_taken(employee_code.strip()):
                 st.error(f"従業員番号「{employee_code.strip()}」はすでに登録されています。")
+            elif errors:
+                for e in errors:
+                    st.error(e.message)
             else:
-                st.success(f"スタッフ「{name.strip()}」を登録しました（ID: {new_id}）。")
-                st.rerun()
+                try:
+                    new_id = repo.create_staff(
+                        conn,
+                        employee_code.strip(),
+                        name.strip(),
+                        role_id,
+                        int(skill_level),
+                        _optional_text(department),
+                        standard_start_time=_optional_text(new_start),
+                        standard_end_time=_optional_text(new_end),
+                        target_days_per_week=new_target_days,
+                        max_days_per_period=new_max_days,
+                        max_consecutive_days=new_max_consecutive,
+                        weekdays=new_weekdays,
+                        special_skill_ids=new_special_skill_ids,
+                        substitute_role_ids=new_substitute_role_ids,
+                    )
+                except sqlite3.IntegrityError:
+                    st.error(f"従業員番号「{employee_code.strip()}」はすでに登録されています。")
+                else:
+                    st.success(f"スタッフ「{name.strip()}」を登録しました（ID: {new_id}）。")
+                    st.rerun()
 
 # ---------------------------------------------------------------------------
 # 編集・無効化
 # ---------------------------------------------------------------------------
 
-st.subheader("編集")
 
-if not staff_list:
-    st.stop()
+def _edit_section() -> None:
+    if not staff_list:
+        st.info("編集できるスタッフがいません。")
+        return
+    edit_target = st.selectbox(
+        "編集するスタッフ",
+        options=[s.staff_id for s in staff_list],
+        format_func=lambda sid: next(
+            f"{s.employee_code} {s.staff_name}" for s in staff_list if s.staff_id == sid
+        ),
+        key="edit_target_staff",
+    )
+    detail = repo.get_staff_detail(conn, edit_target)
+    target = detail.staff
+    for warning in staff_setting_warnings(detail):
+        st.warning(warning)
+    # 入力欄の key はスタッフごとに分ける。共通の key だと、別のスタッフを選び直しても
+    # 前に選んだ人の値が入力欄に残り、そのまま「更新」すると選んだ人に前の人の内容を書いてしまう
+    edit_key = f"edit_{edit_target}"
 
-edit_target = st.selectbox(
-    "編集するスタッフ",
-    options=[s.staff_id for s in staff_list],
-    format_func=lambda sid: next(
-        f"{s.employee_code} {s.staff_name}" for s in staff_list if s.staff_id == sid
-    ),
-    key="edit_target_staff",
-)
-detail = repo.get_staff_detail(conn, edit_target)
-target = detail.staff
-for warning in staff_setting_warnings(detail):
-    st.warning(warning)
-# 入力欄の key はスタッフごとに分ける。共通の key だと、別のスタッフを選び直しても
-# 前に選んだ人の値が入力欄に残り、そのまま「更新」すると選んだ人に前の人の内容を書いてしまう
-edit_key = f"edit_{edit_target}"
-
-with st.form("edit_staff_form"):
-    edit_employee_code = st.text_input(
-        "従業員番号", value=target.employee_code, key=f"{edit_key}_employee_code"
-    )
-    edit_name = st.text_input("氏名", value=target.staff_name, key=f"{edit_key}_name")
-    edit_department = st.text_input(
-        "部門", value=target.department or "", key=f"{edit_key}_department"
-    )
-    edit_role_id = st.selectbox(
-        "ロール",
-        options=role_ids,
-        index=role_ids.index(target.role_id),
-        format_func=lambda rid: role_name_by_id.get(rid, str(rid)),
-        key=f"{edit_key}_role_id",
-    )
-    edit_substitute_role_ids = _substitute_role_multiselect(
-        f"{edit_key}_substitute_roles", detail.substitute_role_ids
-    )
-    edit_skill_level = st.selectbox(
-        "総合スキル",
-        options=skill_options,
-        index=target.skill_level - SKILL_LEVEL_MIN,
-        format_func=format_skill_level,
-        key=f"{edit_key}_skill_level",
-    )
-    edit_special_skill_ids = _special_skill_multiselect(
-        f"{edit_key}_special_skills", detail.special_skill_ids
-    )
-    edit_weekdays = _weekday_checkboxes(edit_key, detail.weekdays)
-    edit_start, edit_end = _standard_time_inputs(
-        edit_key, target.standard_start_time, target.standard_end_time
-    )
-    edit_target_days, edit_max_consecutive = _work_volume_inputs(
-        edit_key,
-        target.target_days_per_week,
-        target.max_consecutive_days,
-    )
-    edit_max_days = target.max_days_per_period  # 入力欄なし. 保存済みの値はそのまま残す
-
-    edit_submitted = st.form_submit_button("更新")
-
-    if edit_submitted:
-        errors = services.validate_staff_master_input(
-            conn,
-            edit_employee_code,
-            edit_name,
-            int(edit_skill_level),
-            standard_start_time=edit_start,
-            standard_end_time=edit_end,
-            target_days_per_week=edit_target_days,
-            max_days_per_period=edit_max_days,
-            max_consecutive_days=edit_max_consecutive,
-            weekdays=edit_weekdays,
-            special_skill_ids=edit_special_skill_ids,
+    with st.form("edit_staff_form"):
+        edit_employee_code = st.text_input(
+            "従業員番号", value=target.employee_code, key=f"{edit_key}_employee_code"
         )
-        code = edit_employee_code.strip() if isinstance(edit_employee_code, str) else ""
-        if not errors and _employee_code_taken(code, exclude_staff_id=edit_target):
-            st.error(f"従業員番号「{code}」はすでに登録されています。")
-        elif errors:
-            for e in errors:
-                st.error(e.message)
-        else:
-            try:
-                repo.update_staff(
-                    conn,
-                    edit_target,
-                    employee_code=code,
-                    staff_name=edit_name.strip(),
-                    role_id=edit_role_id,
-                    skill_level=int(edit_skill_level),
-                    department=_optional_text(edit_department),
-                    standard_start_time=_optional_text(edit_start),
-                    standard_end_time=_optional_text(edit_end),
-                    target_days_per_week=edit_target_days,
-                    max_days_per_period=edit_max_days,
-                    max_consecutive_days=edit_max_consecutive,
-                    weekdays=edit_weekdays,
-                    special_skill_ids=edit_special_skill_ids,
-                    substitute_role_ids=edit_substitute_role_ids,
-                )
-            except sqlite3.IntegrityError:
-                st.error(f"従業員番号「{code}」はすでに登録されています。")
-            else:
-                st.success("更新しました。")
-                st.rerun()
+        edit_name = st.text_input("氏名", value=target.staff_name, key=f"{edit_key}_name")
+        edit_department = st.text_input(
+            "部門", value=target.department or "", key=f"{edit_key}_department"
+        )
+        edit_role_id = st.selectbox(
+            "ロール",
+            options=role_ids,
+            index=role_ids.index(target.role_id),
+            format_func=lambda rid: role_name_by_id.get(rid, str(rid)),
+            key=f"{edit_key}_role_id",
+        )
+        edit_substitute_role_ids = _substitute_role_multiselect(
+            f"{edit_key}_substitute_roles", detail.substitute_role_ids
+        )
+        edit_skill_level = st.selectbox(
+            "総合スキル",
+            options=skill_options,
+            index=target.skill_level - SKILL_LEVEL_MIN,
+            format_func=format_skill_level,
+            key=f"{edit_key}_skill_level",
+        )
+        edit_special_skill_ids = _special_skill_multiselect(
+            f"{edit_key}_special_skills", detail.special_skill_ids
+        )
+        edit_weekdays = _weekday_checkboxes(edit_key, detail.weekdays)
+        edit_start, edit_end = _standard_time_inputs(
+            edit_key, target.standard_start_time, target.standard_end_time
+        )
+        edit_target_days, edit_max_consecutive = _work_volume_inputs(
+            edit_key,
+            target.target_days_per_week,
+            target.max_consecutive_days,
+        )
+        edit_max_days = target.max_days_per_period  # 入力欄なし. 保存済みの値はそのまま残す
 
-st.markdown("**無効化**")
-if target.active:
-    confirm = st.checkbox(
-        f"「{target.staff_name}」を無効化することを確認しました",
-        key=f"deactivate_confirm_{edit_target}",
-    )
-    if st.button("無効化する", disabled=not confirm):
-        repo.deactivate_staff(conn, edit_target)
-        st.success("無効化しました。")
-        st.rerun()
-else:
-    st.caption("このスタッフはすでに無効です。")
+        edit_submitted = st.form_submit_button("更新")
+
+        if edit_submitted:
+            errors = services.validate_staff_master_input(
+                conn,
+                edit_employee_code,
+                edit_name,
+                int(edit_skill_level),
+                standard_start_time=edit_start,
+                standard_end_time=edit_end,
+                target_days_per_week=edit_target_days,
+                max_days_per_period=edit_max_days,
+                max_consecutive_days=edit_max_consecutive,
+                weekdays=edit_weekdays,
+                special_skill_ids=edit_special_skill_ids,
+            )
+            code = edit_employee_code.strip() if isinstance(edit_employee_code, str) else ""
+            if not errors and _employee_code_taken(code, exclude_staff_id=edit_target):
+                st.error(f"従業員番号「{code}」はすでに登録されています。")
+            elif errors:
+                for e in errors:
+                    st.error(e.message)
+            else:
+                try:
+                    repo.update_staff(
+                        conn,
+                        edit_target,
+                        employee_code=code,
+                        staff_name=edit_name.strip(),
+                        role_id=edit_role_id,
+                        skill_level=int(edit_skill_level),
+                        department=_optional_text(edit_department),
+                        standard_start_time=_optional_text(edit_start),
+                        standard_end_time=_optional_text(edit_end),
+                        target_days_per_week=edit_target_days,
+                        max_days_per_period=edit_max_days,
+                        max_consecutive_days=edit_max_consecutive,
+                        weekdays=edit_weekdays,
+                        special_skill_ids=edit_special_skill_ids,
+                        substitute_role_ids=edit_substitute_role_ids,
+                    )
+                except sqlite3.IntegrityError:
+                    st.error(f"従業員番号「{code}」はすでに登録されています。")
+                else:
+                    st.success("更新しました。")
+                    st.rerun()
+
+    st.markdown("**無効化**")
+    if target.active:
+        confirm = st.checkbox(
+            f"「{target.staff_name}」を無効化することを確認しました",
+            key=f"deactivate_confirm_{edit_target}",
+        )
+        if st.button("無効化する", disabled=not confirm):
+            repo.deactivate_staff(conn, edit_target)
+            st.success("無効化しました。")
+            st.rerun()
+    else:
+        st.caption("このスタッフはすでに無効です。")
+
+
+
+with tab_edit:
+    _edit_section()
 
 st.divider()
 st.caption(

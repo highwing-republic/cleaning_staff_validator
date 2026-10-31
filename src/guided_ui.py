@@ -252,7 +252,7 @@ def _show_schedule_table(rows, dates, counts):
     trailing = [c for c in table.columns if c not in {STAFF_COLUMN, *month_columns, *date_columns}]
     table = table[[STAFF_COLUMN, *month_columns, *date_columns, *trailing]].fillna("")
     styles = table_styles(table, dates, counts, format_date_short)
-    st.caption("いちばん上の2行が、日ごとの出勤人数と必要人数です。足りない日は赤く表示します。")
+    st.caption("いちばん上の2行が、日ごとの出勤人数と必要人数です。足りない日は赤く表示します。表は横に動かして確認できます（名前の列は固定しています）。")
     if month_columns:
         st.caption(
             f"「{'」「'.join(month_columns)}」は、その月にすでに保存した勤務と、この勤務表の勤務を"

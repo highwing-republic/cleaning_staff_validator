@@ -72,7 +72,9 @@ for detail in staff_details:
         row[format_date_short(condition.work_date)] = format_day_condition(condition)
     overview_rows.append(row)
 
-st.dataframe(pd.DataFrame(overview_rows), width="stretch", hide_index=True)
+st.caption("表は横に動かして確認できます（名前の列は固定しています）。")
+st.dataframe(pd.DataFrame(overview_rows), width="stretch", hide_index=True,
+             column_config={"スタッフ": st.column_config.Column(pinned=True)})
 
 if not repo.list_preferences_in_period(conn, dates[0], dates[-1]):
     # 希望がないのは異常ではない（全員が通常どおり働く期間）

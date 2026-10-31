@@ -166,14 +166,29 @@ def format_date_ja(work_date: str) -> str:
     return f"{int(month)}月{int(day)}日({weekday_label(_date.fromisoformat(work_date))})"
 
 
-def show_errors(errors: list[ValidationError]) -> None:
-    """検証エラー一覧をst.errorで表示する."""
+def _staff_names() -> dict[int, str]:
+    from src import repositories as repo
+
+    conn = open_connection()
+    try:
+        return {s.staff_id: s.staff_name for s in repo.list_staff(conn, include_inactive=True)}
+    finally:
+        conn.close()
+
+
+def show_errors(errors: list[ValidationError], staff_names: dict[int, str] | None = None) -> None:
+    """検証エラー一覧をst.errorで表示する（スタッフはIDではなく氏名で示す）."""
+    if staff_names is None and any(err.staff_id is not None for err in errors):
+        try:
+            staff_names = _staff_names()
+        except Exception:  # 名前を引けなくてもエラー自体は見せる
+            staff_names = {}
     for err in errors:
         parts = []
         if err.work_date:
             parts.append(format_date_ja(err.work_date))
         if err.staff_id is not None:
-            parts.append(f"スタッフID {err.staff_id}")
+            parts.append((staff_names or {}).get(err.staff_id) or f"スタッフID {err.staff_id}")
         prefix = "／".join(parts)
         text = f"[{prefix}] {err.message}" if prefix else err.message
         st.error(text)
