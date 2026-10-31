@@ -25,6 +25,7 @@ from src.daily_count_rows import (
 )
 from src.period_utils import default_period_start, format_date_short, format_period, period_dates
 from src.preference_entry import render_preference_entry
+from src.requirement_defaults import is_weekend_or_holiday
 from src.schedule_print import build_schedule_print_html
 
 
@@ -156,11 +157,11 @@ def _inputs(conn, start, days, dates):
     )
     weekday, weekend = workflow.get_defaults(conn)
     views = services.get_period_requirements(conn, dates)
-    with st.expander(f"基本設定：平日 {weekday}人・土日 {weekend}人"):
+    with st.expander(f"基本設定：平日 {weekday}人・土日祝 {weekend}人"):
         with st.form("gw_defaults"):
             a, b = st.columns(2)
             weekday_new = a.number_input("平日の基本人数", min_value=0, value=weekday, step=1)
-            weekend_new = b.number_input("土日の基本人数", min_value=0, value=weekend, step=1)
+            weekend_new = b.number_input("土日祝の基本人数", min_value=0, value=weekend, step=1)
             st.caption("未入力の日の初期値として使います。すでに保存した日付の人数は変更しません。")
             save_default = st.form_submit_button("基本設定を保存")
         if save_default:
@@ -175,10 +176,10 @@ def _inputs(conn, start, days, dates):
         columns = st.columns(2)
         counts = {}
         for i, view in enumerate(views):
-            initial = view.requirement.required_total_staff if view.is_defined else (weekend if date.fromisoformat(view.work_date).weekday() >= 5 else weekday)
+            initial = view.requirement.required_total_staff if view.is_defined else (weekend if is_weekend_or_holiday(view.work_date) else weekday)
             counts[view.work_date] = columns[i % 2].number_input(format_date_short(view.work_date) + " 最低人数", min_value=0, value=initial, step=1, key=f"gw_count_{view.work_date}")
         st.caption(
-            "役割の内訳は人数から自動で決めます（リーダー1名・チェッカー1名・残りをクリーナー。例: 7名→クリーナー5名）。"
+            "役割の内訳は人数から自動で決めます（リーダー1名・チェッカー1名・残りをクリーナー。例: 8名→クリーナー6名）。"
             "内訳を個別に変えた日や、保存済みの予約室数・最大人数・スキルの条件は維持されます。変更は左メニューの「予約・必要人数」から行えます。"
         )
         confirmed = st.checkbox("休みの希望を確認しました（特別な希望がなくてもチェックしてください）", key="gw_checked_preferences")

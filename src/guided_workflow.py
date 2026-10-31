@@ -143,7 +143,7 @@ def confirm_inputs(conn, start_date, days):
 
 
 def get_defaults(conn):
-    """平日・土日の基本人数. 未保存なら、ふだんの体制（役割の最低人数の合計）."""
+    """平日・土日祝の基本人数. 未保存なら、ふだんの体制（役割の最低人数の合計）."""
     row = conn.execute("SELECT * FROM guided_defaults WHERE singleton=1").fetchone()
     if row:
         return row["weekday_staff"], row["weekend_staff"]

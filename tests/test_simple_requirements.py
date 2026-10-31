@@ -33,6 +33,7 @@ ROLES = [
     {"role_id": CLEANER, "role_code": "CLEANER", "role_name": "クリーナー"},
 ]
 MONDAY, SATURDAY = "2026-11-16", "2026-11-14"
+HOLIDAY = "2026-11-23"  # 勤労感謝の日（月曜）
 
 
 # ---------------------------------------------------------------------------
@@ -55,9 +56,10 @@ def test_auto_role_counts(total, expected):
 
 
 def test_default_breakdown_matches_the_automatic_rule():
-    """初期値（平日7名・土日6名）の内訳は、自動の決め方と同じ."""
-    assert default_role_counts(MONDAY, ROLES) == auto_role_counts(7, ROLES)
-    assert default_role_counts(SATURDAY, ROLES) == auto_role_counts(6, ROLES)
+    """初期値（平日8名・土日祝7名）の内訳は、自動の決め方と同じ."""
+    assert default_role_counts(MONDAY, ROLES) == auto_role_counts(8, ROLES)
+    assert default_role_counts(SATURDAY, ROLES) == auto_role_counts(7, ROLES)
+    assert default_role_counts(HOLIDAY, ROLES) == auto_role_counts(7, ROLES)
 
 
 def test_other_roles_get_no_automatic_count():
@@ -181,10 +183,11 @@ def test_simple_form_is_the_default_and_shows_only_three_inputs_per_day(db_path)
     assert any("まだ保存していない日が14日" in i.value for i in at.info)
 
 
-def test_simple_form_initial_counts_are_weekday_7_and_weekend_6(db_path):
+def test_simple_form_initial_counts_are_weekday_8_and_weekend_or_holiday_7(db_path):
     at = open_page()
-    assert at.number_input(key=f"req_simple_{SATURDAY}_required").value == 6
-    assert at.number_input(key=f"req_simple_{MONDAY}_required").value == 7
+    assert at.number_input(key=f"req_simple_{SATURDAY}_required").value == 7
+    assert at.number_input(key=f"req_simple_{HOLIDAY}_required").value == 7
+    assert at.number_input(key=f"req_simple_{MONDAY}_required").value == 8
 
 
 def test_simple_save_saves_all_days_with_automatic_breakdown(db_path):
@@ -201,7 +204,8 @@ def test_simple_save_saves_all_days_with_automatic_breakdown(db_path):
     assert monday.requirement.reserved_rooms == 30
     assert monday.requirement.note == "団体あり"
     assert monday.role_counts == {LEADER: 1, CHECKER: 1, CLEANER: 7}
-    assert views[SATURDAY].role_counts == {LEADER: 1, CHECKER: 1, CLEANER: 4}
+    assert views[SATURDAY].role_counts == {LEADER: 1, CHECKER: 1, CLEANER: 5}
+    assert views[HOLIDAY].role_counts == {LEADER: 1, CHECKER: 1, CLEANER: 5}
     assert any("保存しました（14日分）" in s.value for s in at.success)
 
 
@@ -229,7 +233,7 @@ def test_advanced_toggle_shows_the_detailed_form(db_path):
     at.toggle(key="requirements_advanced").set_value(True).run()
     assert not at.exception
     assert at.checkbox(key=f"req_{MONDAY}_defined").value is True
-    assert at.number_input(key=f"req_{MONDAY}_role_{CLEANER}").value == 5
+    assert at.number_input(key=f"req_{MONDAY}_role_{CLEANER}").value == 6
     assert any(b.label == "この期間の予約・必要人数を保存" for b in at.button)
 
 

@@ -117,10 +117,10 @@ def test_total_shortfall_message(conn):
 
 
 def test_unsaved_days_are_checked_with_the_defaults(conn):
-    """必要人数をまだ保存していない日は、初期値（平日7名・土日6名）で判定する."""
+    """必要人数をまだ保存していない日は、初期値（平日8名・土日祝7名）で判定する."""
     day = analyze_coverage(conn, [MON])[0]
     assert day.uses_defaults is True
-    assert day.required_total == 7
+    assert day.required_total == 8
     assert day.has_problem  # 6人しかいない
 
 

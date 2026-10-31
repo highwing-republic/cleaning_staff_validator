@@ -97,8 +97,8 @@ def test_confirm_inputs_succeeds_without_preference_rows(conn):
 
 
 def test_default_base_counts_are_the_usual_crew(conn):
-    """基本人数の初期値は、役割の最低人数の合計（平日7名・土日6名）."""
-    assert workflow.get_defaults(conn) == (7, 6)
+    """基本人数の初期値は、役割の最低人数の合計（平日8名・土日祝7名）."""
+    assert workflow.get_defaults(conn) == (8, 7)
 
 
 def test_first_time_counts_save_the_role_breakdown_from_the_count(conn):

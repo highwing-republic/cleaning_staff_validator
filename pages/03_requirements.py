@@ -298,13 +298,13 @@ def _simple_section() -> None:
     st.caption(
         "日ごとに「必要人数」（最低これだけ必要な清掃スタッフの人数）を入れて保存してください。"
         "役割の内訳は人数から自動で決まります（リーダー1名・チェッカー1名・残りをクリーナー。"
-        "例: 7名→クリーナー5名、6名→クリーナー4名）。予約室数と備考は空欄のままでも大丈夫です。"
+        "例: 8名→クリーナー6名、7名→クリーナー5名）。予約室数と備考は空欄のままでも大丈夫です。"
     )
     unsaved = count_undefined(views)
     if unsaved:
         st.info(
             f"まだ保存していない日が{unsaved}日あります。ふだんの人数"
-            f"（平日{WEEKDAY_REQUIRED_TOTAL}名・土日{WEEKEND_REQUIRED_TOTAL}名）を入れてあるので、"
+            f"（平日{WEEKDAY_REQUIRED_TOTAL}名・土日祝{WEEKEND_REQUIRED_TOTAL}名）を入れてあるので、"
             "変わる日だけ直して「保存する」を押してください。"
         )
 

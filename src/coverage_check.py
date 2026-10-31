@@ -51,7 +51,7 @@ class DayCoverage:
 
     work_date: str
     required_total: int
-    # 必要人数が未保存で、初期値（平日7名・土日6名など）で判定したか
+    # 必要人数が未保存で、初期値（平日8名・土日祝7名など）で判定したか
     uses_defaults: bool = False
     available: tuple[str, ...] = ()
     off_by_request: tuple[str, ...] = ()

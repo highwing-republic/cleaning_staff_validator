@@ -539,7 +539,7 @@ def build_generation_request(
 
 
 def _to_lookahead_day(view: DailyRequirementView, roles: list) -> GenerationDay:
-    """先読みの日. 必要人数が未保存なら初期値（平日7名・土日6名など）で見込む.
+    """先読みの日. 必要人数が未保存なら初期値（平日8名・土日祝7名など）で見込む.
 
     見込みなので最大人数は付けない（Hard Constraint にしない）。
     """
