@@ -110,8 +110,8 @@ def test_a_page_opened_directly_shows_no_data(db):
 
 @pytest.mark.parametrize(("url_path", "title"), [
     ("staff", "スタッフ管理"),
-    ("attendance_import", "勤怠CSV取込"),
-    ("validation", "勤怠データ検証"),
+    ("requirements", "予約・必要人数"),
+    ("output", "勤務表出力"),
 ])
 def test_opening_a_page_url_before_login_returns_there_after_login(db, url_path, title):
     """未ログインで /staff などを開くとログイン画面が出て（Page not found にしない）、ログイン後はその画面が開く."""

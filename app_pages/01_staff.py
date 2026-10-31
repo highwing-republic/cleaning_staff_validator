@@ -40,7 +40,6 @@ from src.work_time import format_standard_work_time
 st.set_page_config(page_title=PAGE_STAFF, layout="wide")
 st.title(HEADING_STAFF)
 st.caption(
-    "勤怠CSVとの照合には従業員番号を使用します（氏名では照合しません）。"
     "通常勤務曜日・通常勤務時間は「普段の働き方」です。"
     "その日だけの早上がり・遅出は勤務希望で登録します。"
 )

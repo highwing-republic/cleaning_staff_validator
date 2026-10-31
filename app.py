@@ -1,7 +1,6 @@
 """Streamlit エントリポイント.
 
-左メニューは若女将が使う順番に並べる。勤怠CSVの取込・検証は旧機能なので
-「補助機能」として分けて置く（削除はしない）。
+左メニューは若女将が使う順番に並べる。勤怠CSVの取込・検証の画面は削除した。
 ファイル名の番号は変えず、表示上の並びだけを業務順にしている。
 """
 
@@ -22,8 +21,6 @@ from src.navigation import (
     PAGE_REQUIREMENTS,
     PAGE_SCHEDULE,
     PAGE_STAFF,
-    SUPPORT_PAGES,
-    SUPPORT_SECTION_LABEL,
     USAGE_STEPS,
 )
 from src.period_utils import (
@@ -37,13 +34,11 @@ from src.ui_common import open_connection
 # ホームのURL上の名前（ログイン画面も同じにして、ログイン後にホームが開くようにする）
 HOME_URL_PATH = "home"
 
-# MENU_PAGES / MAIN_PAGES / SUPPORT_PAGES は src/navigation.py の定義をそのまま再公開する
+# MENU_PAGES / MAIN_PAGES は src/navigation.py の定義をそのまま再公開する
 __all__ = [
     "APP_TITLE",
     "MAIN_PAGES",
     "MENU_PAGES",
-    "SUPPORT_PAGES",
-    "SUPPORT_SECTION_LABEL",
     "home",
     "main",
 ]
@@ -69,9 +64,6 @@ def main() -> None:
             MAIN_SECTION_LABEL: [home_page],
             "スタッフ設定": [st.Page(MAIN_PAGES[0][0], title="スタッフ管理")],
             "詳細操作（必要なときだけ）": [st.Page(path, title=title) for path, title in MAIN_PAGES[1:]],
-            SUPPORT_SECTION_LABEL: [
-                st.Page(path, title=title) for path, title in SUPPORT_PAGES
-            ],
         }
     )
     if restore_failed:
@@ -175,7 +167,6 @@ def home() -> None:
             )
             for step in USAGE_STEPS:
                 st.write(step)
-            st.caption("勤怠CSVの補助機能は、通常の勤務表づくりには使いません。")
     finally:
         conn.close()
 
