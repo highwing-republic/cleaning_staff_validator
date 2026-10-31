@@ -52,6 +52,7 @@ from src.models import (
     StaffInput,
     ValidationError,
 )
+from src.requirement_defaults import default_role_counts, required_total_for
 from src.schedule_excel import build_schedule_excel
 from src.schedule_output_display import format_export_cell
 from src.schedule_validation_adapter import validate_schedule_period
@@ -472,6 +473,7 @@ def build_generation_request(
     prior_work_history: dict[int, set[str]] | None = None,
     following_work_history: dict[int, set[str]] | None = None,
     time_limit_seconds: float | None = None,
+    lookahead_dates: list[str] | None = None,
 ) -> GenerationRequest:
     """DBから生成に必要なデータを集め、Solver用の入力へ変換する.
 
@@ -482,7 +484,9 @@ def build_generation_request(
     if not work_dates:
         return GenerationRequest(work_dates=[], staff=[], days=[])
 
-    first, last = work_dates[0], work_dates[-1]
+    lookahead_dates = [d for d in (lookahead_dates or []) if d not in set(work_dates)]
+    condition_dates = list(work_dates) + lookahead_dates
+    first, last = condition_dates[0], condition_dates[-1]
 
     preferences_by_staff: dict[int, dict[str, StaffDatePreferenceInput]] = {}
     for pref in repo.list_preferences_in_period(conn, first, last):
@@ -494,7 +498,7 @@ def build_generation_request(
         conditions = {
             condition.work_date: condition
             for condition in resolve_period_conditions(
-                detail, work_dates, preferences_by_staff.get(detail.staff.staff_id, {})
+                detail, condition_dates, preferences_by_staff.get(detail.staff.staff_id, {})
             )
         }
         staff.append(
@@ -514,17 +518,71 @@ def build_generation_request(
     days = [
         _to_generation_day(view) for view in get_period_requirements(conn, work_dates)
     ]
+    roles = repo.list_roles(conn)
+    lookahead_days = [
+        _to_lookahead_day(view, roles)
+        for view in get_period_requirements(conn, lookahead_dates)
+    ]
 
     return GenerationRequest(
         work_dates=list(work_dates),
         staff=staff,
         days=days,
+        lookahead_days=lookahead_days,
         prior_work_history={} if prior_work_history is None else prior_work_history,
         following_work_history=(
             {} if following_work_history is None else following_work_history
         ),
         time_limit_seconds=time_limit_seconds,
     )
+
+
+def _to_lookahead_day(view: DailyRequirementView, roles: list) -> GenerationDay:
+    """先読みの日. 必要人数が未保存なら初期値（平日7名・土日6名など）で見込む.
+
+    見込みなので最大人数は付けない（Hard Constraint にしない）。
+    """
+    if view.is_defined:
+        return dataclasses.replace(_to_generation_day(view), max_total_staff=None)
+    return GenerationDay(
+        work_date=view.work_date,
+        requirement_is_set=True,
+        required_total_staff=required_total_for(view.work_date),
+        role_requirements={
+            role_id: count
+            for role_id, count in default_role_counts(view.work_date, roles).items()
+            if count > 0
+        },
+    )
+
+
+def build_lookahead_dates(conn: sqlite3.Connection, work_dates: list[str]) -> list[str]:
+    """期間の直後で、まだ勤務表のない日（連続勤務の上限の最大値の日数まで）.
+
+    勤務表のある日に着いたら止める（その日以降は保存済みの勤務で境界を扱う）。
+    連続勤務の上限を設定したスタッフがいなければ先読みしない。
+    """
+    if not work_dates:
+        return []
+    limits = [
+        detail.staff.max_consecutive_days
+        for detail in repo.list_staff_details(conn, include_inactive=False)
+        if detail.staff.max_consecutive_days
+    ]
+    if not limits:
+        return []
+    end = parse_date(work_dates[-1])
+    if end is None:
+        return []
+    candidates = [(end + timedelta(days=i)).isoformat() for i in range(1, max(limits) + 1)]
+    following = get_current_schedule(conn, candidates)
+    dates = []
+    for work_date in candidates:
+        view = following.day(work_date)
+        if view is not None and view.exists:
+            break
+        dates.append(work_date)
+    return dates
 
 
 def _to_generation_day(view: DailyRequirementView) -> GenerationDay:
@@ -843,6 +901,7 @@ def build_regeneration_request(
         prior_work_history=build_prior_work_history(conn, work_dates),
         following_work_history=build_following_work_history(conn, work_dates),
         time_limit_seconds=time_limit_seconds,
+        lookahead_dates=build_lookahead_dates(conn, work_dates),
     )
     request_staff_ids = {staff.staff_id for staff in request.staff}
 
