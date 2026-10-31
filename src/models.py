@@ -459,6 +459,9 @@ class GenerationRequest:
     days: list[GenerationDay]
     prior_work_history: dict[int, set[str]] = field(default_factory=dict)
     following_work_history: dict[int, set[str]] = field(default_factory=dict)
+    # 期間の直後で、まだ勤務表のない日（先読み）. 連続勤務の上限で次の期間が困らないように
+    # 一緒に考えるが、結果には含めない（保存しない）
+    lookahead_days: list[GenerationDay] = field(default_factory=list)
     # (staff_id, work_date) -> 1=出勤で固定 / 0=休みで固定. Hard Constraint として扱い、
     # 公平性や希望休のために動かさない
     fixed_assignments: dict[tuple[int, str], int] = field(default_factory=dict)

@@ -13,6 +13,8 @@ SQLite・Streamlitへは依存しない。Service層が集めた GenerationReque
 最適化は辞書式に6段階へ分ける（重み付き単一目的にはしない）。
     Pass 1: 不足の合計を最小化
     Pass 2: Pass 1 を固定し、PREFER_OFF 違反数を最小化
+    （Pass 2.5: 先読みの日＝期間の直後でまだ勤務表のない日、の不足を最小化。
+      連続勤務の上限で次の期間の最初の数日が困らないようにする。結果には含めない）
     Pass 3: Pass 1〜2 を固定し、明示目標・チェッカー目標の乖離を最小化
     Pass 4: Pass 1〜3 を固定し、目標未設定者の自動目安との乖離を最小化
     Pass 5: Pass 1〜4 を固定し、個人別乖離の最大値を最小化
@@ -25,6 +27,7 @@ SQLite・Streamlitへは依存しない。Service層が集めた GenerationReque
 0日に寄ることを防ぎつつ、明示された目標勤務日数を優先できる。
 """
 
+import dataclasses
 import time
 
 from ortools.sat.python import cp_model
@@ -105,7 +108,24 @@ def generate_shift(request: GenerationRequest) -> ScheduleGenerationResult:
     _add_fixed_assignments(model, x, request.fixed_assignments, work_dates)
 
     shortages = _add_requirement_constraints(model, x, request.staff, days)
-    _add_max_consecutive_constraints(model, x, request, work_dates)
+
+    # 先読み: 期間の直後で勤務表のない日も変数を置き、連続勤務の上限と不足だけを考える。
+    # 期間内の不足・希望を優先し（辞書式の後段）、結果には含めない
+    lookahead = [d for d in request.lookahead_days if d.work_date not in set(work_dates)]
+    lookahead_dates = [d.work_date for d in lookahead]
+    lookahead_candidates, _ = _collect_candidates(request.staff, lookahead_dates)
+    y = {
+        (staff.staff_id, work_date): model.NewBoolVar(f"y_{staff.staff_id}_{work_date}")
+        for staff in request.staff
+        for work_date in lookahead_dates
+    }
+    for (staff_id, work_date), variable in y.items():
+        if work_date not in lookahead_candidates.get(staff_id, set()):
+            model.Add(variable == 0)
+    lookahead_shortages = _add_requirement_constraints(
+        model, y, request.staff, [dataclasses.replace(d, max_total_staff=None) for d in lookahead]
+    )
+    _add_max_consecutive_constraints(model, {**x, **y}, request, work_dates)
 
     effective_targets, automatic_average_ids = _effective_target_scales(
         request.staff, days, work_dates
@@ -118,6 +138,7 @@ def generate_shift(request: GenerationRequest) -> ScheduleGenerationResult:
         shortages,
         effective_targets,
         automatic_average_ids,
+        lookahead_shortages,
     )
 
     total_budget = (
@@ -169,6 +190,7 @@ def _objective_factories(
     shortages: dict,
     effective_targets: dict[int, int],
     automatic_average_ids: set[int],
+    lookahead_shortages: dict | None = None,
 ) -> list[tuple[str, object]]:
     """優先順位の高い順に (名前, 目的式を作る関数) を並べて返す.
 
@@ -192,6 +214,10 @@ def _objective_factories(
     ]
     if prefer_off_terms:
         factories.append(("prefer_off", lambda: sum(prefer_off_terms)))
+
+    # 次の期間の最初の数日（先読み）の不足. 期間内の不足・できれば休みより後、目標日数より前
+    if lookahead_shortages:
+        factories.append(("lookahead_shortage", lambda: sum(lookahead_shortages.values())))
 
     deviation_vars: dict[int, object] | None = None
 
