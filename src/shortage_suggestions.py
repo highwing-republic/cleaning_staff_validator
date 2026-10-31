@@ -200,7 +200,22 @@ def suggest_for_day(
                                 fit[1], minutes, needs_extra)
         ranked.append(((KIND_ORDER[kind], fit[0], minutes, order), suggestion))
     ranked.sort(key=lambda item: item[0])
-    return [s for _, s in ranked[:limit]]
+    # 足りない役割が複数あるときは、まず役割ごとにいちばん良い人を1人ずつ入れてから、残りを順に足す
+    # （クリーナーの候補ばかりでチェッカーの候補が出ない、を避ける）
+    limit = max(limit, len([n for n in shortage.role_shortages.values() if n > 0]))
+    chosen, seen_fills = [], set()
+    for key, suggestion in ranked:
+        fill = suggestion.fills.removeprefix("代わりに")
+        if fill not in seen_fills:
+            seen_fills.add(fill)
+            chosen.append((key, suggestion))
+    for item in ranked:
+        if len(chosen) >= limit:
+            break
+        if item not in chosen:
+            chosen.append(item)
+    chosen = sorted(chosen[:limit], key=lambda item: item[0])
+    return [s for _, s in chosen]
 
 
 # ---------------------------------------------------------------------------
@@ -287,10 +302,23 @@ def format_suggestion(s: Suggestion) -> str:
 
 
 def describe_shortage(shortage: DayShortage, role_names: Mapping[int, str]) -> str:
-    """'リーダー1人・人数2人' のように何が足りないか."""
-    parts = [f"{role_names.get(rid, rid)}{n}人" for rid, n in sorted(shortage.role_shortages.items()) if n]
+    """何が足りないか.
+
+    '2人不足（チェッカー1人・クリーナー1人）' / 'リーダー1人不足（人数は足りています）' /
+    '・スキルLv4以上が1人不足' を付け足す.
+    役割の不足は人数の不足の内訳なので、足し合わせない（4人足りないように見えないように）。
+    """
+    roles = "・".join(
+        f"{role_names.get(rid, rid)}{n}人" for rid, n in sorted(shortage.role_shortages.items()) if n
+    )
     if shortage.staff_shortage:
-        parts.append(f"人数{shortage.staff_shortage}人")
+        text = f"{shortage.staff_shortage}人不足" + (f"（{roles}）" if roles else "")
+    elif roles:
+        text = f"{roles}不足（人数は足りています）"
+    else:
+        text = ""
     if shortage.skill_shortage:
-        parts.append(f"スキル{shortage.skill_shortage}人")
-    return "・".join(parts)
+        level = f"Lv{shortage.required_skill_level}以上" if shortage.required_skill_level is not None else ""
+        skill = f"スキル{level}が{shortage.skill_shortage}人不足"
+        text = f"{text}・{skill}" if text else skill
+    return text

@@ -400,7 +400,7 @@ def _suggestion_section(conn, dates):
     )
     for shortage in shortages:
         work_date = shortage.work_date
-        st.markdown(f"**{format_date_short(work_date)}**　{describe_shortage(shortage, role_names)}不足")
+        st.markdown(f"**{format_date_short(work_date)}**　{describe_shortage(shortage, role_names)}")
         items = suggestions.get(work_date, [])
         if not items:
             st.caption(NO_CANDIDATE_MESSAGE)

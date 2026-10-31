@@ -254,9 +254,17 @@ def assign_suggestion(conn, dates, staff_id, work_date, needs_extra_day, expecte
             current = repo.get_staff_date_preference(conn, staff_id, work_date)
             if current is not None and current.absolute_off:
                 raise WorkflowError("この日は「必ず休み」の希望が出ています。")
+            # ③で自分で決めた変更なので、②の「休みの希望を確認しました」が有効なら有効のまま残す
+            # （残さないと、開き直したときに②へ戻されて確認し直しになる）
+            row = conn.execute("SELECT preferences_review FROM guided_periods WHERE start_date=? AND days=?",
+                               (dates[0], len(dates))).fetchone()
+            was_confirmed = row is not None and row["preferences_review"] == review_fingerprint(conn, dates, "preferences")
             pref = replace(current, available_extra=True) if current else StaffDatePreferenceInput(
                 staff_id=staff_id, work_date=work_date, available_extra=True)
             repo._upsert_preference(conn, pref, repo._now())  # 出勤の保存と同じトランザクションで
+            if was_confirmed:
+                conn.execute("UPDATE guided_periods SET preferences_review=?,updated_at=? WHERE start_date=? AND days=?",
+                             (review_fingerprint(conn, dates, "preferences"), _now(), dates[0], len(dates)))
         _apply_manual_change(conn, staff_id, work_date, True, True)
 
 

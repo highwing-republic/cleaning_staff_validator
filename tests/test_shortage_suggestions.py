@@ -240,3 +240,44 @@ def test_step3_shows_candidates_and_assigns_with_the_button(conn):
     assert any("S2さんを11/7(土)の出勤にしました" in s.value for s in at.success)
     assert repo.get_schedule_assignment(conn, SAT, weekday_only).is_working
     assert not any("足りない日に入ってもらえそうな人" in m.value for m in at.markdown)  # 不足が解消した
+
+
+def test_describe_shortage_does_not_double_count():
+    from src.shortage_suggestions import DayShortage, describe_shortage
+
+    names = {LEADER: "リーダー", CHECKER: "チェッカー", CLEANER: "クリーナー"}
+    assert describe_shortage(DayShortage(SAT, 2, {CHECKER: 1, CLEANER: 1}), names) == "2人不足（チェッカー1人・クリーナー1人）"
+    assert describe_shortage(DayShortage(SAT, 0, {LEADER: 1}), names) == "リーダー1人不足（人数は足りています）"
+    assert describe_shortage(DayShortage(SAT, 1, {}, 1, 4), names) == "1人不足・スキルLv4以上が1人不足"
+
+
+def test_each_missing_role_gets_a_candidate():
+    """クリーナーの候補が多くても、足りないチェッカーの候補を必ず入れる."""
+    from src.models import StaffDayCondition, StaffDetail, StaffInput
+    from src.shortage_suggestions import DayShortage, suggest_for_day
+
+    def detail(sid, role):
+        return StaffDetail(staff=StaffInput(sid, str(sid), f"S{sid}", role, 3, standard_start_time="09:00",
+                                            standard_end_time="15:30"), weekdays=(0, 1, 2, 3, 4))
+
+    staff = [detail(i, CLEANER) for i in range(1, 6)] + [detail(9, CHECKER)]
+    conditions = {(d.staff.staff_id, SAT): StaffDayCondition(d.staff.staff_id, SAT, False, False) for d in staff}
+    minutes = {9: 9999}  # チェッカーは今月たくさん働いていて、並び順では後ろ
+    result = suggest_for_day(DayShortage(SAT, 2, {CHECKER: 1, CLEANER: 1}), staff, set(), conditions, {},
+                             {CHECKER: "チェッカー", CLEANER: "クリーナー"}, minutes)
+    assert len(result) == 3
+    assert 9 in [s.staff_id for s in result]
+
+
+def test_assign_does_not_send_the_guided_flow_back_to_step2(conn):
+    """③で候補の人を入れても、開き直したときに②（休みの希望の確認）へ戻されない."""
+    add(conn, "1", LEADER, weekdays=range(7))
+    sid = add(conn, "2", CHECKER)
+    workflow.start_period(conn, DATES[0], 7)
+    workflow.save_staff_counts(conn, DATES, {d: 2 if d == SAT else 1 for d in DATES},
+                               workflow.review_fingerprint(conn, DATES, "requirements"))
+    workflow.confirm_inputs(conn, DATES[0], 7)
+    workflow.save_preview(conn, workflow.make_preview(conn, DATES))
+    assert workflow.get_progress(conn, DATES[0], 7) == 3
+    workflow.assign_suggestion(conn, DATES, sid, SAT, True, workflow.input_fingerprint(conn, DATES))
+    assert workflow.get_progress(conn, DATES[0], 7) == 3
